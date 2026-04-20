@@ -2,6 +2,7 @@ const STORAGE_KEY = "house-connected-home-v1";
 const ADMIN_PASSWORD_KEY = "house-admin-password-v1";
 const ADMIN_ACCESS_KEY = "house-admin-access-v1";
 const STATE_API_URL = "/api/state";
+const SESSION_API_URL = "/api/session";
 
 const PROFILE_MAP = {
   thomas: {
@@ -249,6 +250,7 @@ const currentDate = document.querySelector("#currentDate");
 const profileSwitch = document.querySelector("#profileSwitch");
 const navButtons = Array.from(document.querySelectorAll(".nav-link"));
 const adminFab = document.querySelector(".admin-fab");
+const workspace = document.querySelector(".workspace");
 const isCalendarPage = document.body.dataset.page === "calendar";
 const isRecipePage = document.body.dataset.page === "recipe";
 const isIngredientPage = document.body.dataset.page === "ingredient";
@@ -261,6 +263,9 @@ const stateSync = {
   isSaving: false,
   hasPendingSave: false,
   saveTimerId: null,
+  authRequired: false,
+  authEnabled: false,
+  isAuthenticated: false,
 };
 
 let state = normalizeState(clone(DEFAULT_STATE));
@@ -273,6 +278,7 @@ init();
 async function init() {
   renderCurrentDate();
   bindGlobalEvents();
+  ensureMobilePageNav();
   render();
   await hydrateState();
 }
@@ -281,53 +287,7 @@ function bindGlobalEvents() {
   navButtons.forEach((button) => {
     button.addEventListener("click", () => {
       const { view } = button.dataset;
-
-      if (view === "calendar-page") {
-        window.location.href = "./calendar.html";
-        return;
-      }
-
-      if (view === "recipe-page") {
-        window.location.href = "./recipe.html";
-        return;
-      }
-
-      if (view === "ingredient-page") {
-        window.location.href = "./ingredient.html";
-        return;
-      }
-
-      if (view === "stock-page") {
-        window.location.href = "./stock.html";
-        return;
-      }
-
-      if (
-        view === "admin-page" ||
-        view === "admin-ingredients-page" ||
-        view === "admin-recipes-page"
-      ) {
-        requestAdminAccess(view);
-        return;
-      }
-
-      state.currentView = view;
-      saveState();
-
-      if (
-        isCalendarPage ||
-        isRecipePage ||
-        isIngredientPage ||
-        isStockPage ||
-        isAdminPage ||
-        isAdminIngredientsPage ||
-        isAdminRecipesPage
-      ) {
-        window.location.href = "./index.html";
-        return;
-      }
-
-      render();
+      openView(view);
     });
   });
 
@@ -347,6 +307,134 @@ function bindGlobalEvents() {
 
   document.addEventListener("click", handleActionClick);
   document.addEventListener("submit", handleFormSubmit);
+}
+
+function ensureMobilePageNav() {
+  if (!workspace || document.querySelector("#mobilePageNav")) {
+    return;
+  }
+
+  const wrapper = document.createElement("div");
+  wrapper.id = "mobilePageNav";
+  wrapper.className = "mobile-page-nav";
+  wrapper.innerHTML = `
+    <label class="mobile-page-nav-label" for="mobilePageSelect">Aller a une page</label>
+    <select id="mobilePageSelect" class="mobile-page-nav-select" aria-label="Aller a une page"></select>
+  `;
+  workspace.insertBefore(wrapper, workspace.firstChild);
+
+  const select = wrapper.querySelector("#mobilePageSelect");
+  if (select) {
+    select.addEventListener("change", (event) => {
+      const nextView = event.target.value;
+      if (!nextView) {
+        return;
+      }
+      openView(nextView);
+    });
+  }
+}
+
+function openView(view) {
+  if (!view) {
+    return;
+  }
+
+  if (view === "calendar-page") {
+    window.location.href = "./calendar.html";
+    return;
+  }
+
+  if (view === "recipe-page") {
+    window.location.href = "./recipe.html";
+    return;
+  }
+
+  if (view === "ingredient-page") {
+    window.location.href = "./ingredient.html";
+    return;
+  }
+
+  if (view === "stock-page") {
+    window.location.href = "./stock.html";
+    return;
+  }
+
+  if (
+    view === "admin-page" ||
+    view === "admin-ingredients-page" ||
+    view === "admin-recipes-page"
+  ) {
+    requestAdminAccess(view);
+    return;
+  }
+
+  state.currentView = view;
+  saveState();
+
+  if (
+    isCalendarPage ||
+    isRecipePage ||
+    isIngredientPage ||
+    isStockPage ||
+    isAdminPage ||
+    isAdminIngredientsPage ||
+    isAdminRecipesPage
+  ) {
+    window.location.href = "./index.html";
+    return;
+  }
+
+  render();
+}
+
+function renderMobilePageOptions() {
+  const options = [
+    { value: "dashboard", label: "Tableau de bord" },
+    { value: "tasks", label: "Taches a faire" },
+    { value: "shopping", label: "Liste de courses" },
+    { value: "cuisine", label: "Cuisine" },
+    { value: "calendar-page", label: "Calendrier" },
+    { value: "vacations", label: "Vacances" },
+    { value: "projects", label: "Projets" },
+  ];
+
+  if (state.activeProfile === "thomas") {
+    options.push({ value: "admin-page", label: "Admin" });
+  }
+
+  return options
+    .map(
+      (option) =>
+        `<option value="${option.value}">${escapeHtml(option.label)}</option>`
+    )
+    .join("");
+}
+
+function getCurrentMobileView() {
+  if (isCalendarPage) {
+    return "calendar-page";
+  }
+
+  if (isRecipePage || isIngredientPage || isStockPage) {
+    return "cuisine";
+  }
+
+  if (isAdminPage || isAdminIngredientsPage || isAdminRecipesPage) {
+    return "admin-page";
+  }
+
+  return state.currentView || "dashboard";
+}
+
+function updateMobilePageNav() {
+  const select = document.querySelector("#mobilePageSelect");
+  if (!select) {
+    return;
+  }
+
+  select.innerHTML = renderMobilePageOptions();
+  select.value = getCurrentMobileView();
 }
 
 function handleActionClick(event) {
@@ -535,41 +623,26 @@ function handleActionClick(event) {
   }
 
   if (action === "open-linked-view") {
-    if (view === "calendar-page") {
-      window.location.href = "./calendar.html";
-      return;
-    }
+    openView(view || "calendar");
+    return;
+  }
 
-    if (view === "recipe-page") {
-      window.location.href = "./recipe.html";
-      return;
-    }
+  if (action === "open-calendar-composer") {
+    ui.calendarComposerOpen = true;
+    render();
+    window.requestAnimationFrame(() => {
+      const composer = document.querySelector("#calendarComposer");
+      if (composer) {
+        composer.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    });
+    return;
+  }
 
-    if (
-      view === "admin-page" ||
-      view === "admin-ingredients-page" ||
-      view === "admin-recipes-page"
-    ) {
-      requestAdminAccess(view);
-      return;
-    }
-
-    state.currentView = view || "calendar";
-    saveState();
-
-    if (
-      (isCalendarPage ||
-        isRecipePage ||
-        isIngredientPage ||
-        isStockPage ||
-        isAdminPage ||
-        isAdminIngredientsPage ||
-        isAdminRecipesPage) &&
-      state.currentView !== "calendar-page"
-    ) {
-      window.location.href = "./index.html";
-      return;
-    }
+  if (action === "close-calendar-composer") {
+    ui.calendarComposerOpen = false;
+    render();
+    return;
   }
 
   if (action === "edit-ingredient" && id) {
@@ -645,19 +718,43 @@ function handleActionClick(event) {
   render();
 }
 
-function handleFormSubmit(event) {
+async function handleFormSubmit(event) {
   const form = event.target;
   if (!(form instanceof HTMLFormElement)) {
     return;
   }
 
   const formId = form.id;
-  if (!formId) {
+  if (!formId && !form.dataset.formType) {
     return;
   }
 
   event.preventDefault();
   const data = new FormData(form);
+
+  if (formId === "houseAccessForm") {
+    const password = clean(data.get("password"));
+    if (!password) {
+      window.alert("Entrez le mot de passe maison.");
+      return;
+    }
+
+    const sessionResult = await unlockHouseSession(password);
+    if (!sessionResult.ok) {
+      window.alert(sessionResult.error || "Mot de passe maison incorrect.");
+      return;
+    }
+
+    stateSync.authRequired = false;
+    stateSync.authEnabled = Boolean(sessionResult.protected);
+    stateSync.isAuthenticated = true;
+    ui.modal = null;
+    await hydrateState();
+    if (stateSync.hasPendingSave) {
+      queueRemoteStateSave(true);
+    }
+    return;
+  }
 
   if (formId === "taskForm") {
     state.tasks.unshift({
@@ -720,6 +817,33 @@ function handleFormSubmit(event) {
     addMealIngredientsToShopping(meal.id);
   }
 
+  if (formId === "cookedForm") {
+    const entryType = clean(data.get("entryType")) || "recipe";
+    const recipeId = clean(data.get("recipeId"));
+    const ingredientId = clean(data.get("ingredientId"));
+    const quantity = clean(data.get("quantity")) || "1";
+
+    if (entryType === "recipe") {
+      const recipe = state.recipes.find((entry) => entry.id === recipeId);
+      if (!recipe) {
+        window.alert("Choisissez une recette pour deduire son stock.");
+        return;
+      }
+
+      getRecipeIngredientEntries(recipe).forEach((entry) => {
+        adjustIngredientStock(entry.ingredientId, entry.quantity || "0", "decrease");
+      });
+    } else {
+      const ingredient = state.ingredients.find((entry) => entry.id === ingredientId);
+      if (!ingredient) {
+        window.alert("Choisissez un ingredient a deduire du stock.");
+        return;
+      }
+
+      adjustIngredientStock(ingredient.id, quantity, "decrease");
+    }
+  }
+
   if (formId === "calendarForm") {
     const relation = parseRelationValue(data.get("relation"));
     state.calendar.unshift({
@@ -731,6 +855,7 @@ function handleFormSubmit(event) {
       sourceType: relation.sourceType,
       sourceId: relation.sourceId,
     });
+    ui.calendarComposerOpen = false;
   }
 
   if (formId === "ingredientForm") {
@@ -1054,6 +1179,7 @@ function render() {
     button.classList.toggle("active", button.dataset.view === targetView);
   });
 
+  updateMobilePageNav();
   animateReveal();
   renderModal();
 }
@@ -1342,38 +1468,8 @@ function renderCuisineView() {
             <button class="ghost-button" type="button" data-action="open-stock-page">Stock</button>
           </div>
         </div>
-        <form id="mealForm">
-          <div class="form-grid">
-            <div class="field full">
-              <label for="meal-recipe">Plat</label>
-              <select id="meal-recipe" name="recipeId" required>
-                <option value="">Choisir une recette</option>
-                ${recipes
-                  .map(
-                    (recipe) => `
-                      <option value="${recipe.id}">${escapeHtml(recipe.name)} · ${escapeHtml(recipe.dishType)}</option>
-                    `
-                  )
-                  .join("")}
-              </select>
-            </div>
-            <div class="field">
-              <label for="meal-date">Date</label>
-              <input id="meal-date" name="scheduledDate" type="date" required />
-            </div>
-            <div class="field">
-              <label for="meal-slot">Moment</label>
-              <select id="meal-slot" name="slot">
-                <option value="matin">Matin</option>
-                <option value="midi">Midi</option>
-                <option value="soir" selected>Soir</option>
-              </select>
-            </div>
-          </div>
-          <div class="form-actions">
-            <button class="action-button" type="submit">Ajouter le repas</button>
-          </div>
-        </form>
+        ${renderMealPlannerForm(recipes)}
+        ${renderCookedUsageForm(recipes)}
       </section>
 
       <section class="panel reveal">
@@ -1397,6 +1493,93 @@ function renderCuisineView() {
         </div>
       </section>
     </div>
+  `;
+}
+
+function renderMealPlannerForm(recipes) {
+  return `
+    <form id="mealForm">
+      <div class="form-grid">
+        <div class="field full">
+          <label for="meal-recipe">Plat</label>
+          <select id="meal-recipe" name="recipeId" required>
+            <option value="">Choisir une recette</option>
+            ${recipes
+              .map(
+                (recipe) => `
+                  <option value="${recipe.id}">${escapeHtml(recipe.name)} · ${escapeHtml(recipe.dishType)}</option>
+                `
+              )
+              .join("")}
+          </select>
+        </div>
+        <div class="field">
+          <label for="meal-date">Date</label>
+          <input id="meal-date" name="scheduledDate" type="date" required />
+        </div>
+        <div class="field">
+          <label for="meal-slot">Moment</label>
+          <select id="meal-slot" name="slot">
+            <option value="matin">Matin</option>
+            <option value="midi">Midi</option>
+            <option value="soir" selected>Soir</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="action-button" type="submit">Ajouter le repas</button>
+      </div>
+    </form>
+  `;
+}
+
+function renderCookedUsageForm(recipes) {
+  return `
+    <div class="section-divider"></div>
+    <div class="section-head section-head-tight">
+      <div>
+        <h3 class="section-title">J'ai cuisine</h3>
+        <p class="section-copy">Declarez une recette faite hors planning ou l'usage ponctuel d'un ingredient pour deduire le stock.</p>
+      </div>
+    </div>
+    <form id="cookedForm">
+      <div class="form-grid">
+        <div class="field">
+          <label for="cooked-entry-type">Deduction via</label>
+          <select id="cooked-entry-type" name="entryType">
+            <option value="recipe">Recette complete</option>
+            <option value="ingredient">Ingredient seul</option>
+          </select>
+        </div>
+        <div class="field full">
+          <label for="cooked-recipe">Recette</label>
+          <select id="cooked-recipe" name="recipeId">
+            <option value="">Choisir une recette</option>
+            ${recipes
+              .map(
+                (recipe) => `
+                  <option value="${recipe.id}">${escapeHtml(recipe.name)} · ${escapeHtml(recipe.dishType)}</option>
+                `
+              )
+              .join("")}
+          </select>
+        </div>
+        <div class="field">
+          <label for="cooked-ingredient">Ingredient</label>
+          <select id="cooked-ingredient" name="ingredientId">
+            <option value="">Choisir un ingredient</option>
+            ${renderIngredientChoiceOptions()}
+          </select>
+        </div>
+        <div class="field">
+          <label for="cooked-quantity">Quantite retiree</label>
+          <input id="cooked-quantity" name="quantity" placeholder="Ex. 2, 200 g, 1 litre" />
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="action-button" type="submit">Deduir du stock</button>
+      </div>
+    </form>
   `;
 }
 
@@ -1699,6 +1882,32 @@ function buildModalContent() {
     return "";
   }
 
+  if (ui.modal.kind === "house-access-auth") {
+    return `
+      <div class="modal-backdrop">
+        <div class="modal-card">
+          <div class="section-head">
+            <div>
+              <h3 class="section-title">Debloquer la synchro maison</h3>
+              <p class="section-copy">Entrez le mot de passe maison pour acceder aux donnees partagees stockees sur votre base Vercel.</p>
+            </div>
+          </div>
+          <form id="houseAccessForm">
+            <div class="form-grid">
+              <div class="field full">
+                <label for="house-access-password">Mot de passe maison</label>
+                <input id="house-access-password" name="password" type="password" required />
+              </div>
+            </div>
+            <div class="form-actions">
+              <button class="action-button" type="submit">Ouvrir la synchro</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
   if (ui.modal.kind === "admin-password-setup") {
     return `
       <div class="modal-backdrop">
@@ -1909,51 +2118,7 @@ function renderCalendarView() {
 
   return `
     <div class="content-split">
-      <section class="composer reveal">
-        <div class="section-head">
-          <div>
-            <h3 class="section-title">Ajouter un evenement</h3>
-            <p class="section-copy">Le calendrier centralise vos rendez-vous et peut rester lie aux autres espaces.</p>
-          </div>
-        </div>
-        <form id="calendarForm">
-          <div class="form-grid">
-            <div class="field full">
-              <label for="calendar-title">Evenement</label>
-              <input id="calendar-title" name="title" required placeholder="Ex. rendez-vous banque" />
-            </div>
-            <div class="field">
-              <label for="calendar-date">Date</label>
-              <input id="calendar-date" name="date" type="date" required />
-            </div>
-            <div class="field">
-              <label for="calendar-type">Type</label>
-              <select id="calendar-type" name="type">
-                <option>Maison</option>
-                <option>Perso</option>
-                <option>Logistique</option>
-                <option>Cuisine</option>
-                <option>Vacances</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="calendar-profiles">Pour qui ?</label>
-              <select id="calendar-profiles" name="profiles">
-                ${renderProfileOptions()}
-              </select>
-            </div>
-            <div class="field">
-              <label for="calendar-relation">Lien</label>
-              <select id="calendar-relation" name="relation">
-                ${renderRelationOptions(["project", "vacation", "task"])}
-              </select>
-            </div>
-          </div>
-          <div class="form-actions">
-            <button class="action-button" type="submit">Ajouter a l'agenda</button>
-          </div>
-        </form>
-      </section>
+      ${renderCalendarComposerSection(true)}
 
       <section class="panel reveal">
         <div class="section-head">
@@ -1987,6 +2152,61 @@ function renderCalendarView() {
         }
       </section>
     </div>
+  `;
+}
+
+function renderCalendarComposerSection(isVisible) {
+  if (!isVisible) {
+    return "";
+  }
+
+  return `
+    <section class="composer reveal" id="calendarComposer">
+      <div class="section-head">
+        <div>
+          <h3 class="section-title">Ajouter un evenement</h3>
+          <p class="section-copy">Le calendrier centralise vos rendez-vous et peut rester lie aux autres espaces.</p>
+        </div>
+        ${isCalendarPage ? '<button class="ghost-button" type="button" data-action="close-calendar-composer">Fermer</button>' : ""}
+      </div>
+      <form id="calendarForm">
+        <div class="form-grid">
+          <div class="field full">
+            <label for="calendar-title">Evenement</label>
+            <input id="calendar-title" name="title" required placeholder="Ex. rendez-vous banque" />
+          </div>
+          <div class="field">
+            <label for="calendar-date">Date</label>
+            <input id="calendar-date" name="date" type="date" required />
+          </div>
+          <div class="field">
+            <label for="calendar-type">Type</label>
+            <select id="calendar-type" name="type">
+              <option>Maison</option>
+              <option>Perso</option>
+              <option>Logistique</option>
+              <option>Cuisine</option>
+              <option>Vacances</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="calendar-profiles">Pour qui ?</label>
+            <select id="calendar-profiles" name="profiles">
+              ${renderProfileOptions()}
+            </select>
+          </div>
+          <div class="field">
+            <label for="calendar-relation">Lien</label>
+            <select id="calendar-relation" name="relation">
+              ${renderRelationOptions(["project", "vacation", "task"])}
+            </select>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="action-button" type="submit">Ajouter a l'agenda</button>
+        </div>
+      </form>
+    </section>
   `;
 }
 
@@ -2631,6 +2851,20 @@ function renderRelationOptions(types) {
     .join("");
 }
 
+function renderIngredientChoiceOptions(selectedId) {
+  return state.ingredients
+    .slice()
+    .sort((left, right) => left.name.localeCompare(right.name, "fr"))
+    .map(
+      (ingredient) => `
+        <option value="${ingredient.id}" ${ingredient.id === selectedId ? "selected" : ""}>
+          ${escapeHtml(ingredient.name)} · ${escapeHtml(ingredient.foodType)}
+        </option>
+      `
+    )
+    .join("");
+}
+
 function renderProfileOptions() {
   return `
     <option value="both">Thomas & Christelle</option>
@@ -2695,6 +2929,7 @@ function renderCalendarDedicatedPage() {
     .sort(sortByDate("date"));
 
   return `
+    ${renderCalendarComposerSection(Boolean(ui.calendarComposerOpen))}
     <section class="panel reveal">
       ${renderCalendarPlanner(timeline)}
     </section>
@@ -2718,6 +2953,7 @@ function renderCalendarDedicatedPage() {
         ${relevantEvents.length ? relevantEvents.map(renderCalendarEventRow).join("") : renderEmpty("Aucun evenement saisi manuellement.")}
       </div>
     </section>
+    <button class="calendar-plus-button" type="button" data-action="open-calendar-composer" aria-label="Ajouter un evenement">+</button>
   `;
 }
 
@@ -3863,6 +4099,9 @@ async function hydrateState() {
   render();
 
   try {
+    const sessionInfo = await fetchHouseSessionState();
+    applyHouseSessionState(sessionInfo);
+
     const remoteRecord = await fetchRemoteState();
     const remoteState = remoteRecord && remoteRecord.state
       ? normalizeState({
@@ -3897,6 +4136,36 @@ async function hydrateState() {
   render();
 }
 
+async function fetchHouseSessionState() {
+  const response = await fetch(SESSION_API_URL, {
+    method: "GET",
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Unable to fetch remote session (${response.status})`);
+  }
+
+  return response.json();
+}
+
+function applyHouseSessionState(sessionInfo) {
+  stateSync.authEnabled = Boolean(sessionInfo && sessionInfo.protected);
+  stateSync.isAuthenticated = !stateSync.authEnabled || Boolean(sessionInfo && sessionInfo.authenticated);
+  stateSync.authRequired = stateSync.authEnabled && !stateSync.isAuthenticated;
+
+  if (stateSync.authRequired) {
+    ui.modal = {
+      kind: "house-access-auth",
+    };
+  } else if (ui.modal?.kind === "house-access-auth") {
+    ui.modal = null;
+  }
+}
+
 async function fetchRemoteState() {
   const response = await fetch(STATE_API_URL, {
     method: "GET",
@@ -3910,6 +4179,11 @@ async function fetchRemoteState() {
     return null;
   }
 
+  if (response.status === 401) {
+    handleRemoteUnauthorized();
+    return null;
+  }
+
   if (!response.ok) {
     throw new Error(`Unable to fetch remote state (${response.status})`);
   }
@@ -3919,6 +4193,11 @@ async function fetchRemoteState() {
 
 function queueRemoteStateSave(immediate) {
   if (typeof window.fetch !== "function") {
+    return;
+  }
+
+  if (stateSync.authRequired) {
+    stateSync.hasPendingSave = true;
     return;
   }
 
@@ -3960,6 +4239,12 @@ async function flushRemoteStateSave() {
       }),
     });
 
+    if (response.status === 401) {
+      handleRemoteUnauthorized();
+      stateSync.hasPendingSave = true;
+      return;
+    }
+
     if (!response.ok && response.status !== 404) {
       throw new Error(`Unable to save remote state (${response.status})`);
     }
@@ -3976,6 +4261,40 @@ async function flushRemoteStateSave() {
 
 function getStateTimestamp(targetState) {
   return clean(targetState && targetState.lastSavedAt);
+}
+
+function handleRemoteUnauthorized() {
+  stateSync.authRequired = true;
+  stateSync.isAuthenticated = false;
+  if (ui.modal?.kind !== "house-access-auth") {
+    ui.modal = {
+      kind: "house-access-auth",
+    };
+  }
+  render();
+}
+
+async function unlockHouseSession(password) {
+  try {
+    const response = await fetch(SESSION_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ password }),
+    });
+    const payload = await response.json();
+    return {
+      ok: response.ok,
+      protected: Boolean(payload.protected),
+      error: payload.error,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: "Impossible d'ouvrir la session maison.",
+    };
+  }
 }
 
 function clone(value) {

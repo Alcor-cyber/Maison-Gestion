@@ -1,4 +1,5 @@
 const { neon } = require("@neondatabase/serverless");
+const { hasValidHouseSession, isSessionProtectionEnabled } = require("./_session");
 
 const STATE_RECORD_ID = "primary";
 
@@ -10,6 +11,14 @@ module.exports = async function handler(request, response) {
   response.setHeader("Cache-Control", "no-store, max-age=0");
 
   try {
+    if (isSessionProtectionEnabled() && !hasValidHouseSession(request)) {
+      sendJson(response, 401, {
+        ok: false,
+        error: "Session maison requise.",
+      });
+      return;
+    }
+
     if (!process.env.DATABASE_URL) {
       sendJson(response, 500, {
         ok: false,
