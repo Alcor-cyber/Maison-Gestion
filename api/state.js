@@ -29,14 +29,14 @@ module.exports = async function handler(request, response) {
     `;
 
     if (request.method === "GET") {
-      const result = await sql`
+      const records = await sql`
         SELECT payload, updated_at
         FROM house_state
         WHERE id = ${STATE_RECORD_ID}
         LIMIT 1
       `;
 
-      const record = result.rows[0];
+      const record = records[0];
       sendJson(response, 200, {
         ok: true,
         state: record ? record.payload : null,
