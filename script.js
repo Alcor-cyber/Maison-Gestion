@@ -121,13 +121,13 @@ const DEFAULT_STATE = {
     },
   ],
   ingredients: [
-    { id: "ing-tomates", name: "Tomates", storage: "frais", foodType: "Legumes" },
-    { id: "ing-basilic", name: "Basilic", storage: "frais", foodType: "Herbes" },
-    { id: "ing-mozzarella", name: "Mozzarella", storage: "frais", foodType: "Produits laitiers" },
-    { id: "ing-pates-lasagnes", name: "Pates a lasagnes", storage: "placard", foodType: "Epicerie" },
-    { id: "ing-pois-chiches", name: "Pois chiches", storage: "placard", foodType: "Legumineuses" },
-    { id: "ing-concombre", name: "Concombre", storage: "frais", foodType: "Legumes" },
-    { id: "ing-feta", name: "Feta", storage: "frais", foodType: "Produits laitiers" },
+    { id: "ing-tomates", name: "Tomates", storage: "frais", foodType: "Legumes", unit: "unites", stockQuantity: "0" },
+    { id: "ing-basilic", name: "Basilic", storage: "frais", foodType: "Herbes", unit: "grammes", stockQuantity: "0" },
+    { id: "ing-mozzarella", name: "Mozzarella", storage: "frais", foodType: "Produits laitiers", unit: "unites", stockQuantity: "0" },
+    { id: "ing-pates-lasagnes", name: "Pates a lasagnes", storage: "placard", foodType: "Epicerie", unit: "grammes", stockQuantity: "0" },
+    { id: "ing-pois-chiches", name: "Pois chiches", storage: "placard", foodType: "Legumineuses", unit: "grammes", stockQuantity: "0" },
+    { id: "ing-concombre", name: "Concombre", storage: "frais", foodType: "Legumes", unit: "unites", stockQuantity: "0" },
+    { id: "ing-feta", name: "Feta", storage: "frais", foodType: "Produits laitiers", unit: "grammes", stockQuantity: "0" },
   ],
   recipes: [
     {
@@ -161,6 +161,7 @@ const DEFAULT_STATE = {
       slot: "soir",
       profiles: ["thomas", "christelle"],
       mealType: "Repas",
+      prepared: false,
     },
     {
       id: "meal-batch",
@@ -170,6 +171,7 @@ const DEFAULT_STATE = {
       slot: "midi",
       profiles: ["thomas", "christelle"],
       mealType: "Repas",
+      prepared: false,
     },
   ],
   calendar: [
@@ -247,6 +249,8 @@ const navButtons = Array.from(document.querySelectorAll(".nav-link"));
 const adminFab = document.querySelector(".admin-fab");
 const isCalendarPage = document.body.dataset.page === "calendar";
 const isRecipePage = document.body.dataset.page === "recipe";
+const isIngredientPage = document.body.dataset.page === "ingredient";
+const isStockPage = document.body.dataset.page === "stock";
 const isAdminPage = document.body.dataset.page === "admin";
 const isAdminIngredientsPage = document.body.dataset.page === "admin-ingredients";
 const isAdminRecipesPage = document.body.dataset.page === "admin-recipes";
@@ -279,6 +283,16 @@ function bindGlobalEvents() {
         return;
       }
 
+      if (view === "ingredient-page") {
+        window.location.href = "./ingredient.html";
+        return;
+      }
+
+      if (view === "stock-page") {
+        window.location.href = "./stock.html";
+        return;
+      }
+
       if (
         view === "admin-page" ||
         view === "admin-ingredients-page" ||
@@ -294,6 +308,8 @@ function bindGlobalEvents() {
       if (
         isCalendarPage ||
         isRecipePage ||
+        isIngredientPage ||
+        isStockPage ||
         isAdminPage ||
         isAdminIngredientsPage ||
         isAdminRecipesPage
@@ -340,10 +356,15 @@ function handleActionClick(event) {
     );
   }
 
+  if (action === "delete-task" && id) {
+    deleteTask(id);
+    saveState();
+    render();
+    return;
+  }
+
   if (action === "toggle-shopping") {
-    state.shopping = state.shopping.map((item) =>
-      item.id === id ? { ...item, purchased: !item.purchased } : item
-    );
+    toggleShoppingPurchase(id);
   }
 
   if (action === "add-meal-shopping") {
@@ -360,8 +381,39 @@ function handleActionClick(event) {
     return;
   }
 
+  if (action === "open-ingredient-page") {
+    window.location.href = "./ingredient.html";
+    return;
+  }
+
+  if (action === "open-stock-page") {
+    window.location.href = "./stock.html";
+    return;
+  }
+
+  if (action === "download-shopping-pdf") {
+    const weekSelect = document.querySelector("#shoppingWeekSelect");
+    const selectedWeekKey = clean(weekSelect ? weekSelect.value : "");
+    downloadShoppingWeekPdf(selectedWeekKey);
+    return;
+  }
+
   if (action === "open-admin-gate") {
     requestAdminAccess("admin-page");
+    return;
+  }
+
+  if (action === "toggle-meal-prepared" && id) {
+    toggleMealPrepared(id);
+    saveState();
+    render();
+    return;
+  }
+
+  if (action === "delete-shopping" && id) {
+    deleteShoppingItem(id);
+    saveState();
+    render();
     return;
   }
 
@@ -499,6 +551,8 @@ function handleActionClick(event) {
     if (
       (isCalendarPage ||
         isRecipePage ||
+        isIngredientPage ||
+        isStockPage ||
         isAdminPage ||
         isAdminIngredientsPage ||
         isAdminRecipesPage) &&
@@ -627,6 +681,15 @@ function handleFormSubmit(event) {
     });
   }
 
+  if (form.dataset.formType === "shopping-quantity-update") {
+    const shoppingId = form.dataset.shoppingId;
+    if (!shoppingId) {
+      return;
+    }
+
+    updateShoppingQuantity(shoppingId, clean(data.get("quantity")) || "1");
+  }
+
   if (formId === "mealForm") {
     const recipe = state.recipes.find((entry) => entry.id === clean(data.get("recipeId")));
     if (!recipe) {
@@ -642,6 +705,7 @@ function handleFormSubmit(event) {
       slot: clean(data.get("slot")) || "soir",
       profiles: ["thomas", "christelle"],
       mealType: clean(data.get("mealType")) || "Repas",
+      prepared: false,
     };
     state.meals.unshift(meal);
     addMealIngredientsToShopping(meal.id);
@@ -672,10 +736,10 @@ function handleFormSubmit(event) {
         name,
         storage: clean(data.get("storage")) || "placard",
         foodType: clean(data.get("foodType")) || "Autres",
+        unit: clean(data.get("unit")) || "unites",
+        stockQuantity: normalizeQuantityString(clean(data.get("stockQuantity")) || "0"),
       });
     }
-
-    state.showIngredientComposer = false;
   }
 
   if (formId === "recipeForm") {
@@ -692,6 +756,22 @@ function handleFormSubmit(event) {
     });
 
     state.recipeDraftIngredients = [];
+  }
+
+  if (form.dataset.formType === "stock-update") {
+    const ingredientId = form.dataset.ingredientId;
+    if (!ingredientId) {
+      return;
+    }
+
+    state.ingredients = state.ingredients.map((ingredient) =>
+      ingredient.id === ingredientId
+        ? {
+            ...ingredient,
+            stockQuantity: normalizeQuantityString(clean(data.get("stockQuantity")) || "0"),
+          }
+        : ingredient
+    );
   }
 
   if (formId === "adminPasswordSetupForm") {
@@ -730,6 +810,7 @@ function handleFormSubmit(event) {
       name: clean(data.get("name")),
       storage: clean(data.get("storage")) || "placard",
       foodType: clean(data.get("foodType")) || "Autres",
+      unit: clean(data.get("unit")) || "unites",
     });
     ui.modal = null;
     saveState();
@@ -851,6 +932,30 @@ function render() {
     `;
     profileSwitch.innerHTML = renderProfileSwitch();
     pageContent.innerHTML = renderRecipePage();
+  } else if (isIngredientPage) {
+    heroTitle.textContent = "Nouvel ingredient";
+    heroSubtitle.textContent =
+      "Ajoutez un ingredient a votre base avec son type, son rangement et un stock de depart si besoin.";
+    heroMeta.innerHTML = `
+      <span class="tag">${state.ingredients.length} ingredients en base</span>
+      <button class="ghost-button" type="button" data-action="open-linked-view" data-view="cuisine">
+        Retour a la cuisine
+      </button>
+    `;
+    profileSwitch.innerHTML = renderProfileSwitch();
+    pageContent.innerHTML = renderIngredientPage();
+  } else if (isStockPage) {
+    heroTitle.textContent = "Stock";
+    heroSubtitle.textContent =
+      "Suivez ce que vous avez deja a la maison, classe par type d'ingredient et synchronise avec les courses et les repas prepares.";
+    heroMeta.innerHTML = `
+      <span class="tag">${state.ingredients.length} ingredients suivis</span>
+      <button class="ghost-button" type="button" data-action="open-linked-view" data-view="cuisine">
+        Retour a la cuisine
+      </button>
+    `;
+    profileSwitch.innerHTML = renderProfileSwitch();
+    pageContent.innerHTML = renderStockPage();
   } else if (isAdminPage) {
     if (state.activeProfile !== "thomas") {
       renderAdminRestricted();
@@ -926,6 +1031,10 @@ function render() {
       ? "calendar-page"
       : isRecipePage
         ? "cuisine"
+        : isIngredientPage
+          ? "cuisine"
+        : isStockPage
+          ? "cuisine"
         : isAdminPage
           ? null
         : isAdminIngredientsPage
@@ -1142,6 +1251,9 @@ function renderTasksView() {
 function renderShoppingView() {
   const relevantItems = getRelevant(state.shopping);
   const groupedShopping = buildShoppingGroups(relevantItems);
+  const exportableWeeks = groupedShopping.filter((group) =>
+    group.categories.some((category) => category.items.some((item) => item.ingredientId))
+  );
 
   return `
     <div class="content-split">
@@ -1175,6 +1287,25 @@ function renderShoppingView() {
             <h3 class="section-title">Liste par semaine</h3>
             <p class="section-copy">${relevantItems.filter((item) => !item.purchased).length} achats restants, regroupes par semaine puis par type d'aliment.</p>
           </div>
+          <div class="inline-stats shopping-export-tools">
+            <span class="source-pill">Liste de la semaine</span>
+            <select id="shoppingWeekSelect" ${exportableWeeks.length ? "" : "disabled"}>
+              ${
+                exportableWeeks.length
+                  ? exportableWeeks
+                      .map(
+                        (group) => `
+                          <option value="${group.key}">Semaine du ${escapeHtml(group.startLabel)} au ${escapeHtml(group.endLabel)}</option>
+                        `
+                      )
+                      .join("")
+                  : '<option value="">Aucune semaine exportable</option>'
+              }
+            </select>
+            <button class="ghost-button" type="button" data-action="download-shopping-pdf" ${exportableWeeks.length ? "" : "disabled"}>
+              Telecharger PDF
+            </button>
+          </div>
         </div>
         <div class="shopping-week-list">
           ${groupedShopping.length ? groupedShopping.map(renderShoppingWeekGroup).join("") : renderEmpty("La liste de courses est vide.")}
@@ -1198,9 +1329,8 @@ function renderCuisineView() {
           </div>
           <div class="inline-stats">
             <button class="ghost-button" type="button" data-action="open-recipe-page">+ Recette</button>
-            <button class="ghost-button" type="button" data-action="toggle-ingredient-composer">
-              + Ingredient
-            </button>
+            <button class="ghost-button" type="button" data-action="open-ingredient-page">+ Ingredient</button>
+            <button class="ghost-button" type="button" data-action="open-stock-page">Stock</button>
           </div>
         </div>
         <form id="mealForm">
@@ -1235,49 +1365,13 @@ function renderCuisineView() {
             <button class="action-button" type="submit">Ajouter le repas</button>
           </div>
         </form>
-        ${
-          state.showIngredientComposer
-            ? `
-              <form id="ingredientForm" class="ingredient-composer">
-                <div class="section-head">
-                  <div>
-                    <h3 class="section-title">Nouvel ingredient</h3>
-                    <p class="section-copy">Ajoutez un ingredient a la base pour le reutiliser ensuite dans les recettes.</p>
-                  </div>
-                </div>
-                <div class="form-grid">
-                  <div class="field">
-                    <label for="ingredient-name">Nom</label>
-                    <input id="ingredient-name" name="name" required placeholder="Ex. citron vert" />
-                  </div>
-                  <div class="field">
-              <label for="ingredient-storage">Type de produit</label>
-              <select id="ingredient-storage" name="storage">
-                <option value="frais">Produit frais</option>
-                <option value="placard">Produit de placard</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="ingredient-food-type">Type d'ingredient</label>
-              <select id="ingredient-food-type" name="foodType">
-                ${renderFoodTypeOptions()}
-              </select>
-            </div>
-          </div>
-                <div class="form-actions">
-                  <button class="action-button" type="submit">Enregistrer l'ingredient</button>
-                </div>
-              </form>
-            `
-            : ""
-        }
       </section>
 
       <section class="panel reveal">
         <div class="section-head">
           <div>
             <h3 class="section-title">Semaine en cuisine</h3>
-            <p class="section-copy">${relevantMeals.length} repas planifies, relies aux courses et au calendrier.</p>
+            <p class="section-copy">${relevantMeals.length} repas planifies, relies aux courses et maintenant au stock de la maison.</p>
           </div>
         </div>
         <div class="entity-grid">
@@ -1294,6 +1388,91 @@ function renderCuisineView() {
         </div>
       </section>
     </div>
+  `;
+}
+
+function renderIngredientPage() {
+  return `
+    <div class="content-split">
+      <section class="composer reveal">
+        <div class="section-head">
+          <div>
+            <h3 class="section-title">Creer un ingredient</h3>
+            <p class="section-copy">Ajoutez-le une fois a la base, puis reutilisez-le dans les recettes, les courses et le stock.</p>
+          </div>
+        </div>
+        <form id="ingredientForm">
+          <div class="form-grid">
+            <div class="field full">
+              <label for="ingredient-name-page">Nom</label>
+              <input id="ingredient-name-page" name="name" required placeholder="Ex. citron vert" />
+            </div>
+            <div class="field">
+              <label for="ingredient-storage-page">Type de produit</label>
+              <select id="ingredient-storage-page" name="storage">
+                <option value="frais">Produit frais</option>
+                <option value="placard">Produit de placard</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="ingredient-food-type-page">Type d'ingredient</label>
+              <select id="ingredient-food-type-page" name="foodType">
+                ${renderFoodTypeOptions()}
+              </select>
+            </div>
+            <div class="field">
+              <label for="ingredient-unit-page">Unite</label>
+              <select id="ingredient-unit-page" name="unit">
+                ${renderMeasurementUnitOptions("unites")}
+              </select>
+            </div>
+            <div class="field full">
+              <label for="ingredient-stock-page">Stock de depart</label>
+              <input id="ingredient-stock-page" name="stockQuantity" placeholder="Ex. 3, 200 g, 1 botte" />
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="action-button" type="submit">Enregistrer l'ingredient</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel reveal">
+        <div class="section-head">
+          <div>
+            <h3 class="section-title">Base ingredients</h3>
+            <p class="section-copy">${state.ingredients.length} ingredient${state.ingredients.length > 1 ? "s" : ""} disponibles dans votre base locale.</p>
+          </div>
+        </div>
+        <div class="entity-grid">
+          ${state.ingredients
+            .slice()
+            .sort((left, right) => left.name.localeCompare(right.name, "fr"))
+            .slice(0, 12)
+            .map(renderIngredientSummaryEntity)
+            .join("")}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderStockPage() {
+  const groups = buildIngredientTypeGroups();
+  const trackedIngredients = state.ingredients.filter((ingredient) => normalizeQuantityString(ingredient.stockQuantity || "0") !== "0").length;
+
+  return `
+    <section class="panel reveal">
+      <div class="section-head">
+        <div>
+          <h3 class="section-title">Stock par type</h3>
+          <p class="section-copy">${trackedIngredients} ingredient${trackedIngredients > 1 ? "s" : ""} ont deja un stock non nul. Cocher une course augmente le stock, preparer un repas le diminue.</p>
+        </div>
+      </div>
+      <div class="shopping-week-list">
+        ${groups.length ? groups.map(renderStockGroup).join("") : renderEmpty("Aucun ingredient en base pour le moment.")}
+      </div>
+    </section>
   `;
 }
 
@@ -1359,42 +1538,10 @@ function renderRecipePage() {
             }
           </div>
           <div class="form-actions">
-            <button class="ghost-button" type="button" data-action="toggle-ingredient-composer">
-              Ajouter un ingredient a la base
-            </button>
+            <button class="ghost-button" type="button" data-action="open-ingredient-page">Ajouter un ingredient a la base</button>
             <button class="action-button" type="submit">Enregistrer la recette</button>
           </div>
         </form>
-        ${
-          state.showIngredientComposer
-            ? `
-              <form id="ingredientForm" class="ingredient-composer">
-                <div class="form-grid">
-                  <div class="field">
-                    <label for="recipe-ingredient-name">Nom</label>
-                    <input id="recipe-ingredient-name" name="name" required placeholder="Ex. fraises" />
-                  </div>
-                  <div class="field">
-                    <label for="recipe-ingredient-storage">Type de produit</label>
-                    <select id="recipe-ingredient-storage" name="storage">
-                      <option value="frais">Produit frais</option>
-                      <option value="placard">Produit de placard</option>
-                    </select>
-                  </div>
-                  <div class="field">
-                    <label for="recipe-ingredient-food-type">Type d'ingredient</label>
-                    <select id="recipe-ingredient-food-type" name="foodType">
-                      ${renderFoodTypeOptions()}
-                    </select>
-                  </div>
-                </div>
-                <div class="form-actions">
-                  <button class="action-button" type="submit">Ajouter a la base</button>
-                </div>
-              </form>
-            `
-            : ""
-        }
       </section>
 
       <section class="panel reveal">
@@ -1634,6 +1781,12 @@ function buildModalContent() {
                 <label for="edit-ingredient-food-type">Type d'ingredient</label>
                 <select id="edit-ingredient-food-type" name="foodType">
                   ${renderFoodTypeOptions(ingredient.foodType || "Autres")}
+                </select>
+              </div>
+              <div class="field">
+                <label for="edit-ingredient-unit">Unite</label>
+                <select id="edit-ingredient-unit" name="unit">
+                  ${renderMeasurementUnitOptions(ingredient.unit || "unites")}
                 </select>
               </div>
             </div>
@@ -1978,9 +2131,14 @@ function renderTaskRow(task) {
           <h4 class="row-title">${escapeHtml(task.title)}</h4>
           <p class="row-copy">Echeance le ${formatShortDate(task.dueDate)} · ${escapeHtml(task.category)}</p>
         </div>
-        <button class="toggle-button" type="button" data-action="toggle-task" data-id="${task.id}">
-          ${task.status === "done" ? "Reouvrir" : "Marquer fait"}
-        </button>
+        <div class="inline-stats">
+          <button class="toggle-button" type="button" data-action="toggle-task" data-id="${task.id}">
+            ${task.status === "done" ? "Reouvrir" : "Marquer fait"}
+          </button>
+          <button class="ghost-button" type="button" data-action="delete-task" data-id="${task.id}">
+            Annuler
+          </button>
+        </div>
       </div>
       <div class="row-bottom">
         <span class="status-pill ${task.status === "done" ? "status-done" : "status-open"}">
@@ -1997,12 +2155,28 @@ function renderShoppingRow(item) {
       <div class="row-top">
         <div>
           <h4 class="row-title">${escapeHtml(item.title)}</h4>
-          <p class="row-copy">Quantite : ${escapeHtml(item.quantity)}</p>
+          <p class="row-copy">${item.ingredientId ? `Ingredient · ${escapeHtml(formatMeasurementUnit(itemUnitLabel(item)))} · ` : ""}Quantite : ${escapeHtml(item.quantity)}</p>
         </div>
-        <button class="toggle-button" type="button" data-action="toggle-shopping" data-id="${item.id}">
-          ${item.purchased ? "A reprendre" : "Coche"}
-        </button>
+        <div class="inline-stats">
+          <button class="toggle-button" type="button" data-action="toggle-shopping" data-id="${item.id}">
+            ${item.purchased ? "A reprendre" : "Coche"}
+          </button>
+          <button class="ghost-button" type="button" data-action="delete-shopping" data-id="${item.id}">
+            Supprimer
+          </button>
+        </div>
       </div>
+      <form data-form-type="shopping-quantity-update" data-shopping-id="${item.id}">
+        <div class="form-grid" style="margin-top: 0.8rem;">
+          <div class="field full">
+            <label for="shopping-quantity-${item.id}">Modifier la quantite</label>
+            <input id="shopping-quantity-${item.id}" name="quantity" value="${escapeHtmlAttribute(item.quantity || "1")}" />
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="action-button" type="submit">Mettre a jour</button>
+        </div>
+      </form>
       <div class="row-bottom">
         <span class="status-pill ${item.purchased ? "status-bought" : "status-open"}">
           ${item.purchased ? "Pris" : "A acheter"}
@@ -2050,12 +2224,19 @@ function renderMealEntity(meal, compact) {
       <div class="entity-top">
         <div>
           <h4 class="entity-title">${escapeHtml(recipe ? recipe.name : meal.title)}</h4>
-          <p class="entity-copy">${escapeHtml(recipe ? recipe.dishType : meal.mealType)} · ${escapeHtml(formatMealSlot(meal.slot))} · ${formatShortDate(meal.scheduledDate)}</p>
+          <p class="entity-copy">${escapeHtml(recipe ? recipe.dishType : meal.mealType)} · ${escapeHtml(formatMealSlot(meal.slot))} · ${formatShortDate(meal.scheduledDate)}${meal.prepared ? " · prepare" : ""}</p>
         </div>
         ${
           compact
             ? `<span class="tag">${pendingItems.length ? `Attention ${pendingItems.length}` : "Cuisine"}</span>`
-            : `<button class="ghost-button" type="button" data-action="add-meal-shopping" data-id="${meal.id}">Ajouter les ingredients manquants</button>`
+            : `
+              <div class="inline-stats">
+                <button class="ghost-button" type="button" data-action="add-meal-shopping" data-id="${meal.id}">Ajouter les ingredients manquants</button>
+                <button class="toggle-button ${meal.prepared ? "is-active" : ""}" type="button" data-action="toggle-meal-prepared" data-id="${meal.id}">
+                  ${meal.prepared ? "Prepar&eacute;" : "Marquer pr&eacute;par&eacute;"}
+                </button>
+              </div>
+            `
         }
       </div>
       <div class="inline-stats">
@@ -2094,6 +2275,64 @@ function renderMealEntity(meal, compact) {
           ? `<p class="entity-copy">Des ingredients ne sont pas encore ajoutes aux courses : ${escapeHtml(unlistedItems.join(", "))}.</p>`
           : ""
       }
+      ${
+        !compact && meal.prepared
+          ? `<p class="entity-copy">Le stock a deja ete deduit pour ce repas. Recliquez sur le bouton si vous voulez annuler cette preparation.</p>`
+          : ""
+      }
+    </article>
+  `;
+}
+
+function renderIngredientSummaryEntity(ingredient) {
+  return `
+    <article class="entity reveal">
+      <div class="entity-top">
+        <div>
+          <h4 class="entity-title">${escapeHtml(ingredient.name)}</h4>
+          <p class="entity-copy">${escapeHtml(formatIngredientStorage(ingredient.storage))} · ${escapeHtml(ingredient.foodType)} · ${escapeHtml(formatMeasurementUnit(ingredient.unit || "unites"))}</p>
+        </div>
+        <span class="tag">Stock ${escapeHtml(normalizeQuantityString(ingredient.stockQuantity || "0"))}</span>
+      </div>
+    </article>
+  `;
+}
+
+function renderStockGroup(group) {
+  return `
+    <details class="shopping-group reveal">
+      <summary class="shopping-group-summary">
+        <span>${escapeHtml(group.foodType)}</span>
+        <span class="tag">${group.ingredients.length}</span>
+      </summary>
+      <div class="entity-grid shopping-items-list">
+        ${group.ingredients.map(renderStockRow).join("")}
+      </div>
+    </details>
+  `;
+}
+
+function renderStockRow(ingredient) {
+  return `
+    <article class="entity reveal">
+      <form id="stockUpdateForm-${ingredient.id}" data-form-type="stock-update" data-ingredient-id="${ingredient.id}">
+        <div class="entity-top">
+          <div>
+            <h4 class="entity-title">${escapeHtml(ingredient.name)}</h4>
+            <p class="entity-copy">${escapeHtml(formatIngredientStorage(ingredient.storage))} · ${escapeHtml(ingredient.foodType)} · ${escapeHtml(formatMeasurementUnit(ingredient.unit || "unites"))}</p>
+          </div>
+          <span class="tag">${escapeHtml(normalizeQuantityString(ingredient.stockQuantity || "0"))}</span>
+        </div>
+        <div class="form-grid" style="margin-top: 1rem;">
+          <div class="field full">
+            <label for="stock-input-${ingredient.id}">Stock actuel</label>
+            <input id="stock-input-${ingredient.id}" name="stockQuantity" value="${escapeHtmlAttribute(normalizeQuantityString(ingredient.stockQuantity || "0"))}" placeholder="Ex. 3, 200 g, 1 botte" />
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="action-button" type="submit">Mettre a jour</button>
+        </div>
+      </form>
     </article>
   `;
 }
@@ -2154,7 +2393,7 @@ function renderAdminIngredientRow(ingredient) {
       <div class="entity-top">
         <div>
           <h4 class="entity-title">${escapeHtml(ingredient.name)}</h4>
-          <p class="entity-copy">${escapeHtml(formatIngredientStorage(ingredient.storage))} · ${escapeHtml(ingredient.foodType)} · utilise dans ${usageCount} recette${usageCount > 1 ? "s" : ""}</p>
+          <p class="entity-copy">${escapeHtml(formatIngredientStorage(ingredient.storage))} · ${escapeHtml(ingredient.foodType)} · ${escapeHtml(formatMeasurementUnit(ingredient.unit || "unites"))} · stock ${escapeHtml(normalizeQuantityString(ingredient.stockQuantity || "0"))} · utilise dans ${usageCount} recette${usageCount > 1 ? "s" : ""}</p>
         </div>
         <div class="inline-stats">
           <button class="ghost-button" type="button" data-action="edit-ingredient" data-id="${ingredient.id}">
@@ -2750,6 +2989,10 @@ function findIngredientByName(name) {
   );
 }
 
+function findIngredientById(ingredientId) {
+  return state.ingredients.find((ingredient) => ingredient.id === ingredientId) || null;
+}
+
 function formatMealSlot(slot) {
   const labels = {
     matin: "Matin",
@@ -2762,6 +3005,57 @@ function formatMealSlot(slot) {
 
 function formatIngredientStorage(storage) {
   return storage === "frais" ? "Produit frais" : "Produit de placard";
+}
+
+function formatMeasurementUnit(unit) {
+  const labels = {
+    grammes: "grammes",
+    litres: "litres",
+    unites: "unites",
+  };
+
+  return labels[unit] || "unites";
+}
+
+function itemUnitLabel(item) {
+  if (!item.ingredientId) {
+    return "unites";
+  }
+
+  const ingredient = findIngredientById(item.ingredientId);
+  return ingredient ? ingredient.unit || "unites" : "unites";
+}
+
+function normalizeQuantityString(quantity) {
+  const value = clean(quantity);
+  if (!value) {
+    return "0";
+  }
+
+  const parsed = parseQuantityParts(value);
+  if (!parsed) {
+    return value;
+  }
+
+  return formatQuantityParts(parsed.amount, parsed.unit);
+}
+
+function parseQuantityParts(quantity) {
+  const value = clean(quantity);
+  const match = value.match(/^(\d+(?:[.,]\d+)?)(?:\s*(.*))?$/);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    amount: Number(match[1].replace(",", ".")),
+    unit: clean(match[2] || ""),
+  };
+}
+
+function formatQuantityParts(amount, unit = "") {
+  const numeric = Number.isInteger(amount) ? String(amount) : String(Number(amount.toFixed(2)));
+  return unit ? `${numeric} ${unit}` : numeric;
 }
 
 function formatFoodType(foodType) {
@@ -2795,6 +3089,21 @@ function renderFoodTypeOptions(selectedValue = "Legumes") {
   return options
     .map(
       (option) => `<option value="${option}" ${option === selectedValue ? "selected" : ""}>${escapeHtml(option)}</option>`
+    )
+    .join("");
+}
+
+function renderMeasurementUnitOptions(selectedValue = "unites") {
+  const options = [
+    { value: "grammes", label: "Grammes" },
+    { value: "litres", label: "Litres" },
+    { value: "unites", label: "Unites" },
+  ];
+
+  return options
+    .map(
+      (option) =>
+        `<option value="${option.value}" ${option.value === selectedValue ? "selected" : ""}>${escapeHtml(option.label)}</option>`
     )
     .join("");
 }
@@ -2883,6 +3192,84 @@ function buildShoppingGroups(items) {
         }))
         .sort((left, right) => left.foodType.localeCompare(right.foodType, "fr")),
     }));
+}
+
+function getExportableShoppingGroups() {
+  const relevantItems = getRelevant(state.shopping).filter((item) => item.ingredientId);
+  return buildShoppingGroups(relevantItems);
+}
+
+function downloadShoppingWeekPdf(weekKey) {
+  const targetWeek = clean(weekKey);
+  if (!targetWeek) {
+    window.alert("Choisissez une semaine a exporter.");
+    return;
+  }
+
+  const { jsPDF } = window.jspdf || {};
+  if (!jsPDF) {
+    window.alert("Le module PDF n'est pas encore disponible. Rechargez la page puis reessayez.");
+    return;
+  }
+
+  const group = getExportableShoppingGroups().find((entry) => entry.key === targetWeek);
+  if (!group) {
+    window.alert("Impossible de trouver cette semaine dans la liste de courses.");
+    return;
+  }
+
+  const doc = new jsPDF({
+    unit: "pt",
+    format: "a4",
+  });
+
+  const marginX = 44;
+  let cursorY = 54;
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const lineHeight = 18;
+  const contentWidth = doc.internal.pageSize.getWidth() - marginX * 2;
+
+  const ensureSpace = (neededHeight = lineHeight) => {
+    if (cursorY + neededHeight <= pageHeight - 44) {
+      return;
+    }
+
+    doc.addPage();
+    cursorY = 54;
+  };
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(18);
+  doc.text(`Liste de courses`, marginX, cursorY);
+  cursorY += 24;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(11);
+  doc.text(`Semaine du ${group.startLabel} au ${group.endLabel}`, marginX, cursorY);
+  cursorY += 24;
+
+  group.categories.forEach((category) => {
+    ensureSpace(30);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text(category.foodType, marginX, cursorY);
+    cursorY += 18;
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+
+    category.items.forEach((item) => {
+      const lines = doc.splitTextToSize(`• ${item.title} — ${item.quantity}`, contentWidth);
+      ensureSpace(lines.length * lineHeight);
+      doc.text(lines, marginX, cursorY);
+      cursorY += lines.length * lineHeight;
+    });
+
+    cursorY += 10;
+  });
+
+  const filename = `liste-courses-${group.key}.pdf`;
+  doc.save(filename);
 }
 
 function buildIngredientTypeGroups() {
@@ -3234,11 +3621,12 @@ function applyIngredientEdit(ingredientId, payload) {
   const nextStorageRaw = clean(payload.storage).toLowerCase();
   const nextStorage = nextStorageRaw === "frais" ? "frais" : "placard";
   const nextFoodType = clean(payload.foodType) || ingredient.foodType || "Autres";
+  const nextUnit = clean(payload.unit) || ingredient.unit || "unites";
   const previousName = ingredient.name;
 
   state.ingredients = state.ingredients.map((entry) =>
     entry.id === ingredientId
-      ? { ...entry, name: nextName, storage: nextStorage, foodType: nextFoodType }
+      ? { ...entry, name: nextName, storage: nextStorage, foodType: nextFoodType, unit: nextUnit }
       : entry
   );
 
@@ -3451,6 +3839,8 @@ function normalizeState(inputState) {
   nextState.ingredients = (nextState.ingredients || []).map((ingredient) => ({
     ...ingredient,
     foodType: ingredient.foodType || "Autres",
+    unit: ingredient.unit || "unites",
+    stockQuantity: normalizeQuantityString(ingredient.stockQuantity || "0"),
   }));
 
   nextState.recipes = (nextState.recipes || []).map((recipe) => ({
@@ -3475,6 +3865,11 @@ function normalizeState(inputState) {
   nextState.calendar = (nextState.calendar || []).filter(
     (eventItem) => eventItem.sourceType !== "meal"
   );
+
+  nextState.meals = (nextState.meals || []).map((meal) => ({
+    ...meal,
+    prepared: Boolean(meal.prepared),
+  }));
 
   return nextState;
 }
@@ -3541,14 +3936,140 @@ function parseRecipeIngredientPrompt(rawValue) {
 }
 
 function addQuantities(leftQuantity, rightQuantity) {
-  const left = clean(leftQuantity);
-  const right = clean(rightQuantity);
+  const left = normalizeQuantityString(leftQuantity);
+  const right = normalizeQuantityString(rightQuantity);
+  const leftParts = parseQuantityParts(left);
+  const rightParts = parseQuantityParts(right);
 
-  if (/^\d+([.,]\d+)?$/.test(left) && /^\d+([.,]\d+)?$/.test(right)) {
-    return String(Number(left.replace(",", ".")) + Number(right.replace(",", ".")));
+  if (left === "0") {
+    return right;
+  }
+
+  if (right === "0") {
+    return left;
+  }
+
+  if (leftParts && rightParts && leftParts.unit === rightParts.unit) {
+    return formatQuantityParts(leftParts.amount + rightParts.amount, leftParts.unit);
   }
 
   return `${left} + ${right}`;
+}
+
+function subtractQuantities(leftQuantity, rightQuantity) {
+  const left = normalizeQuantityString(leftQuantity);
+  const right = normalizeQuantityString(rightQuantity);
+  const leftParts = parseQuantityParts(left);
+  const rightParts = parseQuantityParts(right);
+
+  if (left === "0") {
+    return "0";
+  }
+
+  if (!leftParts || !rightParts || leftParts.unit !== rightParts.unit) {
+    return left;
+  }
+
+  const nextAmount = Math.max(leftParts.amount - rightParts.amount, 0);
+  return formatQuantityParts(nextAmount, leftParts.unit);
+}
+
+function adjustIngredientStock(ingredientId, quantity, operation) {
+  const ingredient = findIngredientById(ingredientId);
+  if (!ingredient) {
+    return;
+  }
+
+  state.ingredients = state.ingredients.map((entry) => {
+    if (entry.id !== ingredientId) {
+      return entry;
+    }
+
+    const currentQuantity = normalizeQuantityString(entry.stockQuantity || "0");
+    const nextQuantity =
+      operation === "increase"
+        ? addQuantities(currentQuantity, quantity)
+        : subtractQuantities(currentQuantity, quantity);
+
+    return {
+      ...entry,
+      stockQuantity: normalizeQuantityString(nextQuantity),
+    };
+  });
+}
+
+function deleteTask(taskId) {
+  state.tasks = state.tasks.filter((task) => task.id !== taskId);
+  state.calendar = state.calendar.filter(
+    (eventItem) => !(eventItem.sourceType === "task" && eventItem.sourceId === taskId)
+  );
+}
+
+function deleteShoppingItem(itemId) {
+  const item = state.shopping.find((entry) => entry.id === itemId);
+  if (!item) {
+    return;
+  }
+
+  if (item.purchased && item.ingredientId) {
+    adjustIngredientStock(item.ingredientId, item.quantity || "0", "decrease");
+  }
+
+  state.shopping = state.shopping.filter((entry) => entry.id !== itemId);
+}
+
+function updateShoppingQuantity(itemId, nextQuantityRaw) {
+  const item = state.shopping.find((entry) => entry.id === itemId);
+  if (!item) {
+    return;
+  }
+
+  const nextQuantity = normalizeQuantityString(nextQuantityRaw || "1");
+  if (item.purchased && item.ingredientId) {
+    adjustIngredientStock(item.ingredientId, item.quantity || "0", "decrease");
+    adjustIngredientStock(item.ingredientId, nextQuantity, "increase");
+  }
+
+  state.shopping = state.shopping.map((entry) =>
+    entry.id === itemId ? { ...entry, quantity: nextQuantity } : entry
+  );
+}
+
+function toggleShoppingPurchase(itemId) {
+  const item = state.shopping.find((entry) => entry.id === itemId);
+  if (!item) {
+    return;
+  }
+
+  const nextPurchased = !item.purchased;
+  if (item.ingredientId) {
+    adjustIngredientStock(item.ingredientId, item.quantity || "0", nextPurchased ? "increase" : "decrease");
+  }
+
+  state.shopping = state.shopping.map((entry) =>
+    entry.id === itemId ? { ...entry, purchased: nextPurchased } : entry
+  );
+}
+
+function toggleMealPrepared(mealId) {
+  const meal = state.meals.find((entry) => entry.id === mealId);
+  if (!meal) {
+    return;
+  }
+
+  const recipe = getRecipeByMeal(meal);
+  if (!recipe) {
+    return;
+  }
+
+  const nextPrepared = !meal.prepared;
+  getRecipeIngredientEntries(recipe).forEach((entry) => {
+    adjustIngredientStock(entry.ingredientId, entry.quantity || "0", nextPrepared ? "decrease" : "increase");
+  });
+
+  state.meals = state.meals.map((entry) =>
+    entry.id === mealId ? { ...entry, prepared: nextPrepared } : entry
+  );
 }
 
 function animateReveal() {

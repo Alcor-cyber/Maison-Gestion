@@ -672,6 +672,19 @@ button {
   margin-top: 0.8rem;
 }
 
+.shopping-export-tools {
+  flex-wrap: wrap;
+}
+
+.shopping-export-tools select {
+  min-height: 2.6rem;
+  padding: 0.72rem 1rem;
+  border-radius: 999px;
+  border: 1px solid rgba(32, 49, 40, 0.08);
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--text);
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
