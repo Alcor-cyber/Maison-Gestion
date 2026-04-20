@@ -1,6 +1,7 @@
 const STORAGE_KEY = "house-connected-home-v1";
 const ADMIN_PASSWORD_KEY = "house-admin-password-v1";
 const ADMIN_ACCESS_KEY = "house-admin-access-v1";
+const PROFILE_SESSION_KEY = "house-active-profile-session-v1";
 const STATE_API_URL = "/api/state";
 const SESSION_API_URL = "/api/session";
 
@@ -248,6 +249,7 @@ const heroMeta = document.querySelector("#heroMeta");
 const pageContent = document.querySelector("#pageContent");
 const currentDate = document.querySelector("#currentDate");
 const profileSwitch = document.querySelector("#profileSwitch");
+const profileSwitchWrap = profileSwitch ? profileSwitch.closest(".profile-switch-wrap") : null;
 const navButtons = Array.from(document.querySelectorAll(".nav-link"));
 const adminFab = document.querySelector(".admin-fab");
 const workspace = document.querySelector(".workspace");
@@ -276,9 +278,13 @@ let ui = {
 init();
 
 async function init() {
+  hydrateActiveProfileFromSession();
   renderCurrentDate();
   bindGlobalEvents();
   ensureMobilePageNav();
+  if (profileSwitchWrap) {
+    profileSwitchWrap.hidden = true;
+  }
   render();
   await hydrateState();
 }
@@ -289,20 +295,6 @@ function bindGlobalEvents() {
       const { view } = button.dataset;
       openView(view);
     });
-  });
-
-  profileSwitch.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-profile]");
-    if (!button) {
-      return;
-    }
-
-    state.activeProfile = button.dataset.profile;
-    if (state.activeProfile !== "thomas") {
-      clearAdminAccess();
-    }
-    saveState();
-    render();
   });
 
   document.addEventListener("click", handleActionClick);
@@ -435,6 +427,31 @@ function updateMobilePageNav() {
 
   select.innerHTML = renderMobilePageOptions();
   select.value = getCurrentMobileView();
+}
+
+function hydrateActiveProfileFromSession() {
+  const storedProfile = window.sessionStorage.getItem(PROFILE_SESSION_KEY);
+  if (storedProfile && PROFILE_MAP[storedProfile]) {
+    state.activeProfile = storedProfile;
+  }
+}
+
+function hasProfileSelection() {
+  const storedProfile = window.sessionStorage.getItem(PROFILE_SESSION_KEY);
+  return Boolean(storedProfile && PROFILE_MAP[storedProfile]);
+}
+
+function setProfileSelection(profileId) {
+  if (!PROFILE_MAP[profileId]) {
+    return;
+  }
+
+  state.activeProfile = profileId;
+  window.sessionStorage.setItem(PROFILE_SESSION_KEY, profileId);
+
+  if (state.activeProfile !== "thomas") {
+    clearAdminAccess();
+  }
 }
 
 function handleActionClick(event) {
@@ -624,6 +641,14 @@ function handleActionClick(event) {
 
   if (action === "open-linked-view") {
     openView(view || "calendar");
+    return;
+  }
+
+  if (action === "choose-profile" && trigger.dataset.profile) {
+    setProfileSelection(trigger.dataset.profile);
+    ui.modal = null;
+    saveState();
+    render();
     return;
   }
 
@@ -1034,6 +1059,12 @@ async function handleFormSubmit(event) {
 }
 
 function render() {
+  if (!hasProfileSelection()) {
+    ui.modal = {
+      kind: "profile-gate",
+    };
+  }
+
   document.body.dataset.themeProfile = state.activeProfile;
   if (state.activeProfile !== "thomas") {
     clearAdminAccess();
@@ -1244,19 +1275,7 @@ function renderHeroMeta() {
 }
 
 function renderProfileSwitch() {
-  return Object.values(PROFILE_MAP)
-    .map(
-      (profile) => `
-        <button
-          class="profile-button ${profile.id === state.activeProfile ? "active" : ""}"
-          type="button"
-          data-profile="${profile.id}"
-        >
-          ${profile.name}
-        </button>
-      `
-    )
-    .join("");
+  return "";
 }
 
 function renderDashboardView() {
@@ -1880,6 +1899,34 @@ function renderModal() {
 function buildModalContent() {
   if (!ui.modal) {
     return "";
+  }
+
+  if (ui.modal.kind === "profile-gate") {
+    return `
+      <div class="modal-backdrop">
+        <div class="modal-card modal-card-compact">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Bienvenue</p>
+              <h3 class="section-title">Quel profil voulez-vous ouvrir ?</h3>
+              <p class="section-copy">Choisissez Thomas ou Christelle pour personnaliser tout l'espace maison sur cet onglet.</p>
+            </div>
+          </div>
+          <div class="profile-entry-grid">
+            ${Object.values(PROFILE_MAP)
+              .map(
+                (profile) => `
+                  <button class="profile-entry-button" type="button" data-action="choose-profile" data-profile="${profile.id}">
+                    <span class="profile-entry-name">${escapeHtml(profile.name)}</span>
+                    <span class="profile-entry-copy">${escapeHtml(profile.accent)}</span>
+                  </button>
+                `
+              )
+              .join("")}
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   if (ui.modal.kind === "house-access-auth") {
