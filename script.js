@@ -1,6 +1,7 @@
 const STORAGE_KEY = "house-connected-home-v1";
 const ADMIN_PASSWORD_KEY = "house-admin-password-v1";
 const ADMIN_ACCESS_KEY = "house-admin-access-v1";
+const STATE_API_URL = "/api/state";
 
 const PROFILE_MAP = {
   thomas: {
@@ -16,6 +17,7 @@ const PROFILE_MAP = {
 };
 
 const DEFAULT_STATE = {
+  lastSavedAt: null,
   currentView: "dashboard",
   activeProfile: "thomas",
   calendarDisplay: "calendar",
@@ -255,17 +257,24 @@ const isAdminPage = document.body.dataset.page === "admin";
 const isAdminIngredientsPage = document.body.dataset.page === "admin-ingredients";
 const isAdminRecipesPage = document.body.dataset.page === "admin-recipes";
 
-let state = loadState();
+const stateSync = {
+  isSaving: false,
+  hasPendingSave: false,
+  saveTimerId: null,
+};
+
+let state = normalizeState(clone(DEFAULT_STATE));
 let ui = {
   modal: null,
 };
 
 init();
 
-function init() {
+async function init() {
   renderCurrentDate();
   bindGlobalEvents();
   render();
+  await hydrateState();
 }
 
 function bindGlobalEvents() {
@@ -3808,25 +3817,165 @@ function clean(value) {
   return String(value || "").trim();
 }
 
-function loadState() {
+function loadStateRecord() {
   try {
     const stored = window.localStorage.getItem(STORAGE_KEY);
     if (!stored) {
-      return normalizeState(clone(DEFAULT_STATE));
+      return {
+        state: normalizeState(clone(DEFAULT_STATE)),
+        hasStoredValue: false,
+      };
     }
 
     const parsed = JSON.parse(stored);
-    return normalizeState({
-      ...clone(DEFAULT_STATE),
-      ...parsed,
-    });
+    return {
+      state: normalizeState({
+        ...clone(DEFAULT_STATE),
+        ...parsed,
+      }),
+      hasStoredValue: true,
+    };
   } catch (error) {
-    return normalizeState(clone(DEFAULT_STATE));
+    return {
+      state: normalizeState(clone(DEFAULT_STATE)),
+      hasStoredValue: false,
+    };
   }
 }
 
+function loadState() {
+  return loadStateRecord().state;
+}
+
 function saveState() {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  state.lastSavedAt = new Date().toISOString();
+  persistLocalState(state);
+  queueRemoteStateSave();
+}
+
+function persistLocalState(snapshot) {
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+}
+
+async function hydrateState() {
+  const localRecord = loadStateRecord();
+  state = localRecord.state;
+  render();
+
+  try {
+    const remoteRecord = await fetchRemoteState();
+    const remoteState = remoteRecord && remoteRecord.state
+      ? normalizeState({
+          ...clone(DEFAULT_STATE),
+          ...remoteRecord.state,
+        })
+      : null;
+    const remoteTimestamp = clean(
+      remoteRecord && (remoteRecord.updatedAt || getStateTimestamp(remoteRecord.state))
+    );
+    const localTimestamp = getStateTimestamp(state);
+
+    if (remoteState) {
+      if (localTimestamp && (!remoteTimestamp || localTimestamp > remoteTimestamp)) {
+        persistLocalState(state);
+        queueRemoteStateSave(true);
+      } else {
+        state = remoteState;
+        persistLocalState(state);
+      }
+    } else if (localRecord.hasStoredValue) {
+      if (!state.lastSavedAt) {
+        state.lastSavedAt = new Date().toISOString();
+        persistLocalState(state);
+      }
+      queueRemoteStateSave(true);
+    }
+  } catch (error) {
+    console.error("Remote state hydration failed:", error);
+  }
+
+  render();
+}
+
+async function fetchRemoteState() {
+  const response = await fetch(STATE_API_URL, {
+    method: "GET",
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+    },
+  });
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    throw new Error(`Unable to fetch remote state (${response.status})`);
+  }
+
+  return response.json();
+}
+
+function queueRemoteStateSave(immediate) {
+  if (typeof window.fetch !== "function") {
+    return;
+  }
+
+  if (stateSync.saveTimerId) {
+    window.clearTimeout(stateSync.saveTimerId);
+    stateSync.saveTimerId = null;
+  }
+
+  if (immediate) {
+    void flushRemoteStateSave();
+    return;
+  }
+
+  stateSync.saveTimerId = window.setTimeout(() => {
+    stateSync.saveTimerId = null;
+    void flushRemoteStateSave();
+  }, 320);
+}
+
+async function flushRemoteStateSave() {
+  if (stateSync.isSaving) {
+    stateSync.hasPendingSave = true;
+    return;
+  }
+
+  stateSync.isSaving = true;
+  stateSync.hasPendingSave = false;
+
+  try {
+    const snapshot = clone(state);
+    const response = await fetch(STATE_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        state: snapshot,
+        updatedAt: getStateTimestamp(snapshot) || new Date().toISOString(),
+      }),
+    });
+
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`Unable to save remote state (${response.status})`);
+    }
+  } catch (error) {
+    console.error("Remote state save failed:", error);
+  } finally {
+    stateSync.isSaving = false;
+    if (stateSync.hasPendingSave) {
+      stateSync.hasPendingSave = false;
+      void flushRemoteStateSave();
+    }
+  }
+}
+
+function getStateTimestamp(targetState) {
+  return clean(targetState && targetState.lastSavedAt);
 }
 
 function clone(value) {
@@ -3835,6 +3984,7 @@ function clone(value) {
 
 function normalizeState(inputState) {
   const nextState = clone(inputState);
+  nextState.lastSavedAt = clean(nextState.lastSavedAt) || null;
 
   nextState.ingredients = (nextState.ingredients || []).map((ingredient) => ({
     ...ingredient,
