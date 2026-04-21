@@ -4,6 +4,7 @@ const ADMIN_ACCESS_KEY = "house-admin-access-v1";
 const PROFILE_SESSION_KEY = "house-active-profile-session-v1";
 const STATE_API_URL = "/api/state";
 const SESSION_API_URL = "/api/session";
+const DEFAULT_ADMIN_PASSWORD = "dracaufeu";
 
 const PROFILE_MAP = {
   thomas: {
@@ -279,6 +280,7 @@ init();
 
 async function init() {
   hydrateActiveProfileFromSession();
+  ensureDefaultAdminPassword();
   renderCurrentDate();
   bindGlobalEvents();
   ensureMobilePageNav();
@@ -506,7 +508,9 @@ function handleActionClick(event) {
   }
 
   if (action === "download-shopping-pdf") {
-    const weekSelect = document.querySelector("#shoppingWeekSelect");
+    const weekSelect =
+      document.querySelector("#shoppingWeekSelect") ||
+      document.querySelector("#dashboardShoppingWeekSelect");
     const selectedWeekKey = clean(weekSelect ? weekSelect.value : "");
     downloadShoppingWeekPdf(selectedWeekKey);
     return;
@@ -694,6 +698,30 @@ function handleActionClick(event) {
     return;
   }
 
+  if (action === "edit-vacation" && id) {
+    openVacationEditModal(id);
+    render();
+    return;
+  }
+
+  if (action === "delete-vacation" && id) {
+    openDeleteModal("vacation", id);
+    render();
+    return;
+  }
+
+  if (action === "edit-project" && id) {
+    openProjectEditModal(id);
+    render();
+    return;
+  }
+
+  if (action === "delete-project" && id) {
+    openDeleteModal("project", id);
+    render();
+    return;
+  }
+
   if (action === "close-modal") {
     ui.modal = null;
     render();
@@ -707,6 +735,14 @@ function handleActionClick(event) {
 
     if (ui.modal.entityType === "recipe") {
       deleteRecipe(ui.modal.id);
+    }
+
+    if (ui.modal.entityType === "vacation") {
+      deleteVacation(ui.modal.id);
+    }
+
+    if (ui.modal.entityType === "project") {
+      deleteProject(ui.modal.id);
     }
 
     ui.modal = null;
@@ -1008,6 +1044,33 @@ async function handleFormSubmit(event) {
     return;
   }
 
+  if (formId === "editVacationForm" && ui.modal?.kind === "edit-vacation") {
+    applyVacationEdit(ui.modal.id, {
+      destination: clean(data.get("destination")),
+      startDate: clean(data.get("startDate")),
+      endDate: clean(data.get("endDate")),
+      budget: Number(data.get("budget")) || 0,
+    });
+    ui.modal = null;
+    saveState();
+    render();
+    return;
+  }
+
+  if (formId === "editProjectForm" && ui.modal?.kind === "edit-project") {
+    applyProjectEdit(ui.modal.id, {
+      title: clean(data.get("title")),
+      lead: clean(data.get("lead")) || "both",
+      status: clean(data.get("status")) || "En cours",
+      deadline: clean(data.get("deadline")),
+      note: clean(data.get("note")) || "",
+    });
+    ui.modal = null;
+    saveState();
+    render();
+    return;
+  }
+
   if (formId === "vacationForm") {
     const vacation = {
       id: uid("vac"),
@@ -1059,6 +1122,8 @@ async function handleFormSubmit(event) {
 }
 
 function render() {
+  const didUpdateTasks = reconcileTasksForToday();
+
   if (!hasProfileSelection()) {
     ui.modal = {
       kind: "profile-gate",
@@ -1071,6 +1136,11 @@ function render() {
   }
   if (adminFab) {
     adminFab.hidden = state.activeProfile !== "thomas";
+  }
+
+  if (didUpdateTasks) {
+    persistLocalState(state);
+    queueRemoteStateSave(true);
   }
 
   if (isCalendarPage) {
@@ -1279,69 +1349,225 @@ function renderProfileSwitch() {
 }
 
 function renderDashboardView() {
-  const relevantTasks = getRelevant(state.tasks);
-  const openTasks = relevantTasks.filter((task) => task.status === "open");
-  const relevantMeals = getRelevant(state.meals)
-    .slice()
-    .sort(sortByDate("scheduledDate"));
-  const relevantProjects = getRelevant(state.projects)
-    .slice()
-    .sort(sortByDate("deadline"));
   const relevantVacations = getRelevant(state.vacations)
     .slice()
     .sort(sortByDate("startDate"));
-  const timeline = buildUnifiedTimeline().slice(0, 8);
   const nextVacation = relevantVacations[0];
+  const todayItems = getDashboardTodayItems();
+  const todayTasks = getTodayTasksForActiveProfile();
+  const exportableWeeks = getExportableShoppingGroups();
+  const currentWeekKey = getWeekInfo(todayDateKey()).key;
+  const preferredWeek = exportableWeeks.find((entry) => entry.key === currentWeekKey) || exportableWeeks[0] || null;
 
   return `
     <div class="metrics-strip">
-      ${renderMetric("Taches ouvertes", String(openTasks.length), `${openTasks.filter((task) => task.profiles.length > 1).length} en duo`)}
       ${renderMetric("Prochaines vacances", nextVacation ? nextVacation.destination : "Aucune", nextVacation ? `Prochain depart dans ${daysUntil(nextVacation.startDate)} jours` : "Aucun voyage programme")}
     </div>
-
-    <section class="panel reveal">
-      <div class="section-head">
-        <div>
-          <h3 class="section-title">Semaine maison</h3>
-          <p class="section-copy">Tout ce qui arrive bientot, sans changer de page.</p>
-        </div>
-        <button class="ghost-button" type="button" data-action="open-calendar-page">Vue calendrier</button>
-      </div>
-      <div class="list">
-        ${timeline.length ? timeline.map(renderTimelineRow).join("") : renderEmpty("Aucun evenement a venir pour le moment.")}
-      </div>
-    </section>
 
     <div class="two-column">
       <section class="panel reveal">
         <div class="section-head">
           <div>
-            <h3 class="section-title">Cuisine et ingredients</h3>
-            <p class="section-copy">Les repas planifies poussent directement la liste de courses.</p>
+            <h3 class="section-title">Aujourd'hui</h3>
+            <p class="section-copy">Seulement les evenements agenda et projets prevus aujourd'hui pour ce profil.</p>
           </div>
-          <button class="ghost-button" type="button" data-action="switch-view" data-view="cuisine">Voir la cuisine</button>
+          <button class="ghost-button" type="button" data-action="open-calendar-page">Vue calendrier</button>
         </div>
-        <div class="entity-grid">
-          ${relevantMeals
-            .slice(0, 3)
-            .map((meal) => renderMealEntity(meal, true))
-            .join("") || renderEmpty("Ajoutez un repas pour commencer la semaine.")}
+        <div class="list">
+          ${todayItems.length ? todayItems.map(renderTimelineRow).join("") : renderEmpty("Aucun evenement agenda ni projet prevu aujourd'hui.")}
         </div>
       </section>
 
       <section class="panel reveal">
         <div class="section-head">
           <div>
-            <h3 class="section-title">Projets relies</h3>
-            <p class="section-copy">Une lecture rapide de vos chantiers et de leur avancement.</p>
+            <h3 class="section-title">Taches du jour</h3>
+            <p class="section-copy">Les taches du jour associees au profil actif.</p>
           </div>
           <button class="ghost-button" type="button" data-action="switch-view" data-view="tasks">Voir les taches</button>
         </div>
+        <div class="list">
+          ${todayTasks.length ? todayTasks.map(renderTaskRow).join("") : renderEmpty("Aucune tache prevue aujourd'hui.")}
+        </div>
+      </section>
+    </div>
+
+    <section class="panel reveal">
+      <div class="section-head">
+        <div>
+          <h3 class="section-title">Courses de la semaine</h3>
+          <p class="section-copy">Telechargez le PDF de la liste de courses de la semaine a partager ou imprimer.</p>
+        </div>
+        <button class="ghost-button" type="button" data-action="switch-view" data-view="shopping">Voir les courses</button>
+      </div>
+      <div class="inline-stats shopping-export-tools">
+        <select id="dashboardShoppingWeekSelect" ${exportableWeeks.length ? "" : "disabled"}>
+          ${
+            exportableWeeks.length
+              ? exportableWeeks
+                  .map(
+                    (week) => `
+                      <option value="${week.key}" ${preferredWeek && week.key === preferredWeek.key ? "selected" : ""}>
+                        Semaine du ${week.startLabel} au ${week.endLabel}
+                      </option>
+                    `
+                  )
+                  .join("")
+              : '<option value="">Aucune semaine disponible</option>'
+          }
+        </select>
+        <button class="action-button" type="button" data-action="download-shopping-pdf" ${exportableWeeks.length ? "" : "disabled"}>
+          PDF de la semaine
+        </button>
+        <span class="source-pill">
+          ${preferredWeek ? `${preferredWeek.totalCount} article${preferredWeek.totalCount > 1 ? "s" : ""}` : "Pas encore de courses"}
+        </span>
+      </div>
+    </section>
+  `;
+}
+
+function getDashboardTodayItems() {
+  const today = todayDateKey();
+
+  return buildUnifiedTimeline()
+    .filter((item) => item.date === today && (item.bucket === "Agenda" || item.bucket === "Projet"))
+    .sort(sortByDate("date"));
+}
+
+function getTodayTasksForActiveProfile() {
+  const today = todayDateKey();
+
+  return getRelevant(state.tasks)
+    .filter((task) => task.dueDate === today && task.status === "open")
+    .slice()
+    .sort(sortByDate("dueDate"));
+}
+
+function renderCompactActionButtons(entityType, id) {
+  return `
+    <div class="inline-stats">
+      <button class="ghost-button" type="button" data-action="edit-${entityType}" data-id="${id}">
+        Modifier
+      </button>
+      <button class="ghost-button" type="button" data-action="delete-${entityType}" data-id="${id}">
+        Supprimer
+      </button>
+    </div>
+  `;
+}
+
+function renderVacationsView() {
+  const relevantVacations = getRelevant(state.vacations).slice().sort(sortByDate("startDate"));
+
+  return `
+    <div class="content-split">
+      <section class="composer reveal">
+        <div class="section-head">
+          <div>
+            <h3 class="section-title">Ajouter un sejour</h3>
+            <p class="section-copy">Le voyage s'inscrit dans le calendrier et pourra se lier ensuite a un projet ou a des taches.</p>
+          </div>
+        </div>
+        <form id="vacationForm">
+          <div class="form-grid">
+            <div class="field full">
+              <label for="vacation-destination">Destination</label>
+              <input id="vacation-destination" name="destination" required placeholder="Ex. Amsterdam" />
+            </div>
+            <div class="field">
+              <label for="vacation-start">Depart</label>
+              <input id="vacation-start" name="startDate" type="date" required />
+            </div>
+            <div class="field">
+              <label for="vacation-end">Retour</label>
+              <input id="vacation-end" name="endDate" type="date" required />
+            </div>
+            <div class="field">
+              <label for="vacation-budget">Budget estime</label>
+              <input id="vacation-budget" name="budget" type="number" min="0" placeholder="900" />
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="action-button" type="submit">Ajouter le sejour</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel reveal">
+        <div class="section-head">
+          <div>
+            <h3 class="section-title">Sejours a venir</h3>
+            <p class="section-copy">${relevantVacations.length} projet${relevantVacations.length > 1 ? "s" : ""} de vacances relie${relevantVacations.length > 1 ? "s" : ""} au quotidien.</p>
+          </div>
+        </div>
         <div class="entity-grid">
-          ${relevantProjects
-            .slice(0, 3)
-            .map(renderProjectEntity)
-            .join("") || renderEmpty("Aucun projet en cours.")}
+          ${relevantVacations.length ? relevantVacations.map(renderVacationEntity).join("") : renderEmpty("Aucune vacances enregistree pour le moment.")}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderProjectsView() {
+  const relevantProjects = getRelevant(state.projects).slice().sort(sortByDate("deadline"));
+
+  return `
+    <div class="content-split">
+      <section class="composer reveal">
+        <div class="section-head">
+          <div>
+            <h3 class="section-title">Ajouter un projet</h3>
+            <p class="section-copy">La base de coordination pour relier taches, vacances et achats dans un seul endroit.</p>
+          </div>
+        </div>
+        <form id="projectForm">
+          <div class="form-grid">
+            <div class="field full">
+              <label for="project-title">Projet</label>
+              <input id="project-title" name="title" required placeholder="Ex. refaire l'entree" />
+            </div>
+            <div class="field">
+              <label for="project-lead">Responsable</label>
+              <select id="project-lead" name="lead">
+                <option value="thomas">Thomas</option>
+                <option value="christelle">Christelle</option>
+                <option value="both">Thomas et Christelle</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="project-status">Statut</label>
+              <select id="project-status" name="status">
+                <option>En cours</option>
+                <option>Planification</option>
+                <option>Decision</option>
+                <option>Termine</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="project-deadline">Echeance</label>
+              <input id="project-deadline" name="deadline" type="date" required />
+            </div>
+            <div class="field full">
+              <label for="project-note">Note</label>
+              <textarea id="project-note" name="note" rows="4" placeholder="Ce qui doit avancer, les idees a garder, les arbitrages a faire..."></textarea>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="action-button" type="submit">Ajouter le projet</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel reveal">
+        <div class="section-head">
+          <div>
+            <h3 class="section-title">Portefeuille maison</h3>
+            <p class="section-copy">${relevantProjects.length} projet${relevantProjects.length > 1 ? "s" : ""} dans le radar, relies au reste de l'app.</p>
+          </div>
+        </div>
+        <div class="entity-grid">
+          ${relevantProjects.length ? relevantProjects.map(renderProjectEntity).join("") : renderEmpty("Aucun projet maison pour l'instant.")}
         </div>
       </section>
     </div>
@@ -1472,6 +1698,7 @@ function renderShoppingView() {
 function renderCuisineView() {
   const relevantMeals = getRelevant(state.meals).slice().sort(sortByDate("scheduledDate"));
   const recipes = state.recipes.slice().sort((left, right) => left.name.localeCompare(right.name, "fr"));
+  const mealWeekGroups = buildCuisineMealWeekGroups(relevantMeals);
 
   return `
     <div class="content-split">
@@ -1498,20 +1725,107 @@ function renderCuisineView() {
             <p class="section-copy">${relevantMeals.length} repas planifies, relies aux courses et maintenant au stock de la maison.</p>
           </div>
         </div>
-        <div class="entity-grid">
-          ${relevantMeals.length ? relevantMeals.map((meal) => renderMealEntity(meal, false)).join("") : renderEmpty("Aucun repas n'est programme pour l'instant.")}
-        </div>
-        <div class="section-head" style="margin-top: 1rem;">
-          <div>
-            <h3 class="section-title">Base de recettes</h3>
-            <p class="section-copy">${recipes.length} recette${recipes.length > 1 ? "s" : ""} prêtes a etre planifiees.</p>
-          </div>
-        </div>
-        <div class="entity-grid">
-          ${recipes.length ? recipes.slice(0, 6).map(renderRecipeEntity).join("") : renderEmpty("Aucune recette en base pour le moment.")}
+        <div class="cuisine-tree-wrap">
+          ${
+            mealWeekGroups.length
+              ? renderCuisineMealTree(mealWeekGroups)
+              : renderEmpty("Aucun repas n'est programme pour l'instant.")
+          }
         </div>
       </section>
     </div>
+  `;
+}
+
+function buildCuisineMealWeekGroups(meals) {
+  const weekMap = new Map();
+
+  meals.forEach((meal) => {
+    const weekInfo = getWeekInfo(meal.scheduledDate);
+    if (!weekMap.has(weekInfo.key)) {
+      weekMap.set(weekInfo.key, {
+        ...weekInfo,
+        mealsCount: 0,
+        daysMap: new Map(),
+      });
+    }
+
+    const weekGroup = weekMap.get(weekInfo.key);
+    weekGroup.mealsCount += 1;
+
+    if (!weekGroup.daysMap.has(meal.scheduledDate)) {
+      weekGroup.daysMap.set(meal.scheduledDate, {
+        date: meal.scheduledDate,
+        label: formatLongDate(meal.scheduledDate),
+        meals: [],
+      });
+    }
+
+    weekGroup.daysMap.get(meal.scheduledDate).meals.push(meal);
+  });
+
+  return Array.from(weekMap.values())
+    .sort((left, right) => left.key.localeCompare(right.key))
+    .map((weekGroup) => ({
+      key: weekGroup.key,
+      startLabel: weekGroup.startLabel,
+      endLabel: weekGroup.endLabel,
+      mealsCount: weekGroup.mealsCount,
+      days: Array.from(weekGroup.daysMap.values())
+        .sort((left, right) => left.date.localeCompare(right.date))
+        .map((dayGroup) => ({
+          ...dayGroup,
+          meals: dayGroup.meals.slice().sort((left, right) => {
+            const slotOrder = ["matin", "midi", "soir"];
+            const leftIndex = slotOrder.indexOf(left.slot);
+            const rightIndex = slotOrder.indexOf(right.slot);
+            return leftIndex - rightIndex;
+          }),
+        })),
+    }));
+}
+
+function renderCuisineMealTree(weekGroups) {
+  const totalMeals = weekGroups.reduce((count, weekGroup) => count + weekGroup.mealsCount, 0);
+
+  return `
+    <details class="shopping-group reveal cuisine-root-group" open>
+      <summary class="shopping-group-summary">
+        <span>Cuisine / Semaine en cuisine</span>
+        <span class="tag">${totalMeals} recette${totalMeals > 1 ? "s" : ""}</span>
+      </summary>
+      <div class="cuisine-week-list">
+        ${weekGroups.map(renderCuisineWeekGroup).join("")}
+      </div>
+    </details>
+  `;
+}
+
+function renderCuisineWeekGroup(weekGroup) {
+  return `
+    <details class="shopping-group reveal cuisine-week-group">
+      <summary class="shopping-group-summary">
+        <span>Semaine du ${escapeHtml(weekGroup.startLabel)} au ${escapeHtml(weekGroup.endLabel)}</span>
+        <span class="tag">${weekGroup.mealsCount}</span>
+      </summary>
+      <div class="cuisine-day-list">
+        ${weekGroup.days.map(renderCuisineDayGroup).join("")}
+      </div>
+    </details>
+  `;
+}
+
+function renderCuisineDayGroup(dayGroup) {
+  return `
+    <details class="shopping-subgroup cuisine-day-group">
+      <summary class="shopping-subgroup-summary">
+        <span>${escapeHtml(dayGroup.label)}</span>
+        <span class="tag">${dayGroup.meals.length}</span>
+      </summary>
+      <div class="entity-grid cuisine-meal-grid">
+        ${dayGroup.meals.map((meal) => renderMealEntity(meal, false)).join("")}
+      </div>
+    </details>
   `;
 }
 
@@ -1907,18 +2221,15 @@ function buildModalContent() {
         <div class="modal-card modal-card-compact">
           <div class="section-head">
             <div>
-              <p class="eyebrow">Bienvenue</p>
-              <h3 class="section-title">Quel profil voulez-vous ouvrir ?</h3>
-              <p class="section-copy">Choisissez Thomas ou Christelle pour personnaliser tout l'espace maison sur cet onglet.</p>
+              <h3 class="section-title">Profils</h3>
             </div>
           </div>
           <div class="profile-entry-grid">
             ${Object.values(PROFILE_MAP)
               .map(
                 (profile) => `
-                  <button class="profile-entry-button" type="button" data-action="choose-profile" data-profile="${profile.id}">
+                  <button class="profile-entry-button profile-entry-button-${profile.id}" type="button" data-action="choose-profile" data-profile="${profile.id}">
                     <span class="profile-entry-name">${escapeHtml(profile.name)}</span>
-                    <span class="profile-entry-copy">${escapeHtml(profile.accent)}</span>
                   </button>
                 `
               )
@@ -2134,6 +2445,107 @@ function buildModalContent() {
     `;
   }
 
+  if (ui.modal.kind === "edit-vacation") {
+    const vacation = state.vacations.find((entry) => entry.id === ui.modal.id);
+    if (!vacation) {
+      return "";
+    }
+
+    return `
+      <div class="modal-backdrop">
+        <div class="modal-card">
+          <div class="section-head">
+            <div>
+              <h3 class="section-title">Modifier le sejour</h3>
+              <p class="section-copy">Mettez a jour les dates, la destination et le budget sans perdre les liens utiles.</p>
+            </div>
+            <button class="ghost-button" type="button" data-action="close-modal">Fermer</button>
+          </div>
+          <form id="editVacationForm">
+            <div class="form-grid">
+              <div class="field full">
+                <label for="edit-vacation-destination">Destination</label>
+                <input id="edit-vacation-destination" name="destination" value="${escapeHtmlAttribute(vacation.destination)}" required />
+              </div>
+              <div class="field">
+                <label for="edit-vacation-start">Depart</label>
+                <input id="edit-vacation-start" name="startDate" type="date" value="${escapeHtmlAttribute(vacation.startDate)}" required />
+              </div>
+              <div class="field">
+                <label for="edit-vacation-end">Retour</label>
+                <input id="edit-vacation-end" name="endDate" type="date" value="${escapeHtmlAttribute(vacation.endDate)}" required />
+              </div>
+              <div class="field">
+                <label for="edit-vacation-budget">Budget estime</label>
+                <input id="edit-vacation-budget" name="budget" type="number" min="0" value="${escapeHtmlAttribute(vacation.budget || 0)}" />
+              </div>
+            </div>
+            <div class="form-actions">
+              <button class="action-button" type="submit">Enregistrer</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  if (ui.modal.kind === "edit-project") {
+    const project = state.projects.find((entry) => entry.id === ui.modal.id);
+    if (!project) {
+      return "";
+    }
+
+    return `
+      <div class="modal-backdrop">
+        <div class="modal-card">
+          <div class="section-head">
+            <div>
+              <h3 class="section-title">Modifier le projet</h3>
+              <p class="section-copy">Modifiez le titre, le responsable, le statut, l'echeance et la note du projet.</p>
+            </div>
+            <button class="ghost-button" type="button" data-action="close-modal">Fermer</button>
+          </div>
+          <form id="editProjectForm">
+            <div class="form-grid">
+              <div class="field full">
+                <label for="edit-project-title">Projet</label>
+                <input id="edit-project-title" name="title" value="${escapeHtmlAttribute(project.title)}" required />
+              </div>
+              <div class="field">
+                <label for="edit-project-lead">Responsable</label>
+                <select id="edit-project-lead" name="lead">
+                  <option value="thomas" ${project.lead === "thomas" ? "selected" : ""}>Thomas</option>
+                  <option value="christelle" ${project.lead === "christelle" ? "selected" : ""}>Christelle</option>
+                  <option value="both" ${project.lead === "both" ? "selected" : ""}>Thomas et Christelle</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="edit-project-status">Statut</label>
+                <select id="edit-project-status" name="status">
+                  <option ${project.status === "En cours" ? "selected" : ""}>En cours</option>
+                  <option ${project.status === "Planification" ? "selected" : ""}>Planification</option>
+                  <option ${project.status === "Decision" ? "selected" : ""}>Decision</option>
+                  <option ${project.status === "Termine" ? "selected" : ""}>Termine</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="edit-project-deadline">Echeance</label>
+                <input id="edit-project-deadline" name="deadline" type="date" value="${escapeHtmlAttribute(project.deadline)}" required />
+              </div>
+              <div class="field full">
+                <label for="edit-project-note">Note</label>
+                <textarea id="edit-project-note" name="note" rows="4">${escapeHtml(project.note || "")}</textarea>
+              </div>
+            </div>
+            <div class="form-actions">
+              <button class="action-button" type="submit">Enregistrer</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
   if (ui.modal.kind === "confirm-delete") {
     return `
       <div class="modal-backdrop">
@@ -2257,123 +2669,6 @@ function renderCalendarComposerSection(isVisible) {
   `;
 }
 
-function renderVacationsView() {
-  const relevantVacations = getRelevant(state.vacations).slice().sort(sortByDate("startDate"));
-
-  return `
-    <div class="content-split">
-      <section class="composer reveal">
-        <div class="section-head">
-          <div>
-            <h3 class="section-title">Ajouter un sejour</h3>
-            <p class="section-copy">Le voyage s'inscrit dans le calendrier et pourra se lier ensuite a un projet ou a des taches.</p>
-          </div>
-        </div>
-        <form id="vacationForm">
-          <div class="form-grid">
-            <div class="field full">
-              <label for="vacation-destination">Destination</label>
-              <input id="vacation-destination" name="destination" required placeholder="Ex. Amsterdam" />
-            </div>
-            <div class="field">
-              <label for="vacation-start">Depart</label>
-              <input id="vacation-start" name="startDate" type="date" required />
-            </div>
-            <div class="field">
-              <label for="vacation-end">Retour</label>
-              <input id="vacation-end" name="endDate" type="date" required />
-            </div>
-            <div class="field">
-              <label for="vacation-budget">Budget estime</label>
-              <input id="vacation-budget" name="budget" type="number" min="0" placeholder="900" />
-            </div>
-          </div>
-          <div class="form-actions">
-            <button class="action-button" type="submit">Ajouter le sejour</button>
-          </div>
-        </form>
-      </section>
-
-      <section class="panel reveal">
-        <div class="section-head">
-          <div>
-            <h3 class="section-title">Sejours a venir</h3>
-            <p class="section-copy">${relevantVacations.length} projet${relevantVacations.length > 1 ? "s" : ""} de vacances relie${relevantVacations.length > 1 ? "s" : ""} au quotidien.</p>
-          </div>
-        </div>
-        <div class="entity-grid">
-          ${relevantVacations.length ? relevantVacations.map(renderVacationEntity).join("") : renderEmpty("Aucune vacances enregistree pour le moment.")}
-        </div>
-      </section>
-    </div>
-  `;
-}
-
-function renderProjectsView() {
-  const relevantProjects = getRelevant(state.projects).slice().sort(sortByDate("deadline"));
-
-  return `
-    <div class="content-split">
-      <section class="composer reveal">
-        <div class="section-head">
-          <div>
-            <h3 class="section-title">Ajouter un projet</h3>
-            <p class="section-copy">La base de coordination pour relier taches, vacances et achats dans un seul endroit.</p>
-          </div>
-        </div>
-        <form id="projectForm">
-          <div class="form-grid">
-            <div class="field full">
-              <label for="project-title">Projet</label>
-              <input id="project-title" name="title" required placeholder="Ex. refaire l'entree" />
-            </div>
-            <div class="field">
-              <label for="project-lead">Responsable</label>
-              <select id="project-lead" name="lead">
-                <option value="thomas">Thomas</option>
-                <option value="christelle">Christelle</option>
-                <option value="both">Thomas et Christelle</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="project-status">Statut</label>
-              <select id="project-status" name="status">
-                <option>En cours</option>
-                <option>Planification</option>
-                <option>Decision</option>
-                <option>Termine</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="project-deadline">Echeance</label>
-              <input id="project-deadline" name="deadline" type="date" required />
-            </div>
-            <div class="field full">
-              <label for="project-note">Note</label>
-              <textarea id="project-note" name="note" rows="4" placeholder="Ce qui doit avancer, les idees a garder, les arbitrages a faire..."></textarea>
-            </div>
-          </div>
-          <div class="form-actions">
-            <button class="action-button" type="submit">Ajouter le projet</button>
-          </div>
-        </form>
-      </section>
-
-      <section class="panel reveal">
-        <div class="section-head">
-          <div>
-            <h3 class="section-title">Portefeuille maison</h3>
-            <p class="section-copy">${relevantProjects.length} projet${relevantProjects.length > 1 ? "s" : ""} dans le radar, relies au reste de l'app.</p>
-          </div>
-        </div>
-        <div class="entity-grid">
-          ${relevantProjects.length ? relevantProjects.map(renderProjectEntity).join("") : renderEmpty("Aucun projet maison pour l'instant.")}
-        </div>
-      </section>
-    </div>
-  `;
-}
-
 function renderMetric(label, value, detail) {
   return `
     <article class="metric reveal">
@@ -2400,8 +2695,9 @@ function renderConnectedHighlight({ title, copy, meta }) {
 }
 
 function renderTaskRow(task) {
+  const isLate = Boolean(task.isLate) && task.status !== "done";
   return `
-    <article class="list-row reveal">
+    <article class="list-row reveal ${isLate ? "list-row-late" : ""}">
       <div class="row-top">
         <div>
           <h4 class="row-title">${escapeHtml(task.title)}</h4>
@@ -2417,8 +2713,8 @@ function renderTaskRow(task) {
         </div>
       </div>
       <div class="row-bottom">
-        <span class="status-pill ${task.status === "done" ? "status-done" : "status-open"}">
-          ${task.status === "done" ? "Terminee" : "A faire"}
+        <span class="status-pill ${task.status === "done" ? "status-done" : isLate ? "status-late" : "status-open"}">
+          ${task.status === "done" ? "Terminee" : isLate ? "Retard" : "A faire"}
         </span>
       </div>
     </article>
@@ -2496,11 +2792,11 @@ function renderMealEntity(meal, compact) {
   const unlistedItems = ingredients.filter((ingredient) => !hasShoppingItemForIngredient(meal.id, ingredient));
   const pendingItems = ingredients.filter((ingredient) => !isIngredientValidated(meal.id, ingredient));
   return `
-    <article class="entity reveal">
+    <article class="entity reveal meal-entity">
       <div class="entity-top">
         <div>
           <h4 class="entity-title">${escapeHtml(recipe ? recipe.name : meal.title)}</h4>
-          <p class="entity-copy">${escapeHtml(recipe ? recipe.dishType : meal.mealType)} · ${escapeHtml(formatMealSlot(meal.slot))} · ${formatShortDate(meal.scheduledDate)}${meal.prepared ? " · prepare" : ""}</p>
+          <p class="entity-copy">${escapeHtml(recipe ? recipe.dishType : meal.mealType)} · ${formatShortDate(meal.scheduledDate)}${meal.prepared ? " · prepare" : ""}</p>
         </div>
         ${
           compact
@@ -2556,6 +2852,10 @@ function renderMealEntity(meal, compact) {
           ? `<p class="entity-copy">Le stock a deja ete deduit pour ce repas. Recliquez sur le bouton si vous voulez annuler cette preparation.</p>`
           : ""
       }
+      <div class="entity-foot meal-entity-footer">
+        <span class="source-pill">${escapeHtml(recipe ? recipe.dishType : meal.mealType)}</span>
+        <span class="meal-slot-pill">${escapeHtml(formatMealSlot(meal.slot).toUpperCase())}</span>
+      </div>
     </article>
   `;
 }
@@ -2738,7 +3038,10 @@ function renderProjectEntity(project) {
           <h4 class="entity-title">${escapeHtml(project.title)}</h4>
           <p class="entity-copy">${escapeHtml(project.status)} · echeance ${formatShortDate(project.deadline)} · pilote ${escapeHtml(getLeadLabel(project.lead))}</p>
         </div>
-        <span class="status-pill ${project.status === "Termine" ? "status-done" : "status-open"}">${escapeHtml(project.status)}</span>
+        <div class="inline-stats">
+          <span class="status-pill ${project.status === "Termine" ? "status-done" : "status-open"}">${escapeHtml(project.status)}</span>
+          ${renderCompactActionButtons("project", project.id)}
+        </div>
       </div>
       <p class="entity-copy">${escapeHtml(project.note || "Pas de note pour l'instant.")}</p>
       <div class="progress-line" aria-hidden="true">
@@ -2769,7 +3072,10 @@ function renderVacationEntity(vacation) {
           <h4 class="entity-title">${escapeHtml(vacation.destination)}</h4>
           <p class="entity-copy">Du ${formatShortDate(vacation.startDate)} au ${formatShortDate(vacation.endDate)} · depart dans ${daysUntil(vacation.startDate)} jours</p>
         </div>
-        <span class="tag">${formatCurrency(vacation.budget)}</span>
+        <div class="inline-stats">
+          <span class="tag">${formatCurrency(vacation.budget)}</span>
+          ${renderCompactActionButtons("vacation", vacation.id)}
+        </div>
       </div>
       <div class="entity-foot">
         ${renderProfilePills(vacation.profiles)}
@@ -3405,6 +3711,64 @@ function todayDateKey() {
   return formatDateKey(today.getFullYear(), today.getMonth(), today.getDate());
 }
 
+function reconcileTaskCollection(tasks) {
+  const today = todayDateKey();
+  let changed = false;
+  const nextTasks = [];
+
+  (tasks || []).forEach((task) => {
+    const nextTask = {
+      ...task,
+      status: task.status === "done" ? "done" : "open",
+      dueDate: clean(task.dueDate) || today,
+      isLate: Boolean(task.isLate),
+      lateOriginDate: clean(task.lateOriginDate) || null,
+    };
+
+    if (nextTask.status === "done") {
+      if (nextTask.dueDate < today) {
+        changed = true;
+        return;
+      }
+
+      if (nextTask.isLate || nextTask.lateOriginDate) {
+        nextTask.isLate = false;
+        nextTask.lateOriginDate = null;
+        changed = true;
+      }
+
+      nextTasks.push(nextTask);
+      return;
+    }
+
+    if (nextTask.dueDate < today) {
+      if (nextTask.dueDate !== today || !nextTask.isLate || !nextTask.lateOriginDate) {
+        changed = true;
+      }
+
+      nextTask.lateOriginDate = nextTask.lateOriginDate || nextTask.dueDate;
+      nextTask.dueDate = today;
+      nextTask.isLate = true;
+    }
+
+    nextTasks.push(nextTask);
+  });
+
+  return {
+    tasks: nextTasks,
+    changed,
+  };
+}
+
+function reconcileTasksForToday() {
+  const result = reconcileTaskCollection(state.tasks);
+  if (result.changed) {
+    state.tasks = result.tasks;
+  }
+
+  return result.changed;
+}
+
 function getWeekInfo(dateString) {
   const baseDate = new Date(`${dateString}T12:00:00`);
   const dayIndex = (baseDate.getDay() + 6) % 7;
@@ -3795,15 +4159,6 @@ function requestAdminAccess(targetView) {
     return;
   }
 
-  if (!getAdminPassword()) {
-    ui.modal = {
-      kind: "admin-password-setup",
-      targetView,
-    };
-    render();
-    return;
-  }
-
   ui.modal = {
     kind: "admin-password-auth",
     targetView,
@@ -3822,7 +4177,13 @@ function navigateToAdminTarget(targetView) {
 }
 
 function getAdminPassword() {
-  return window.localStorage.getItem(ADMIN_PASSWORD_KEY) || "";
+  return window.localStorage.getItem(ADMIN_PASSWORD_KEY) || DEFAULT_ADMIN_PASSWORD;
+}
+
+function ensureDefaultAdminPassword() {
+  if (!window.localStorage.getItem(ADMIN_PASSWORD_KEY)) {
+    window.localStorage.setItem(ADMIN_PASSWORD_KEY, DEFAULT_ADMIN_PASSWORD);
+  }
 }
 
 function grantAdminAccess() {
@@ -3859,20 +4220,50 @@ function openRecipeEditModal(recipeId) {
   };
 }
 
+function openVacationEditModal(vacationId) {
+  const vacation = state.vacations.find((entry) => entry.id === vacationId);
+  if (!vacation) {
+    return;
+  }
+
+  ui.modal = {
+    kind: "edit-vacation",
+    id: vacationId,
+  };
+}
+
+function openProjectEditModal(projectId) {
+  const project = state.projects.find((entry) => entry.id === projectId);
+  if (!project) {
+    return;
+  }
+
+  ui.modal = {
+    kind: "edit-project",
+    id: projectId,
+  };
+}
+
 function openDeleteModal(entityType, id) {
-  const label =
-    entityType === "ingredient"
-      ? state.ingredients.find((entry) => entry.id === id)?.name
-      : state.recipes.find((entry) => entry.id === id)?.name;
+  const sources = {
+    ingredient: state.ingredients.find((entry) => entry.id === id)?.name,
+    recipe: state.recipes.find((entry) => entry.id === id)?.name,
+    vacation: state.vacations.find((entry) => entry.id === id)?.destination,
+    project: state.projects.find((entry) => entry.id === id)?.title,
+  };
+  const label = sources[entityType];
+  const messages = {
+    ingredient: `Supprimer ${label} ? Il sera retire des recettes et des courses liees.`,
+    recipe: `Supprimer ${label} ? Les repas planifies relies seront aussi supprimes.`,
+    vacation: `Supprimer ${label} ? Les evenements calendrier et les taches relies seront aussi retires.`,
+    project: `Supprimer ${label} ? Les taches, achats et liens vacances relies seront nettoyes.`,
+  };
 
   ui.modal = {
     kind: "confirm-delete",
     entityType,
     id,
-    message:
-      entityType === "ingredient"
-        ? `Supprimer ${label} ? Il sera retire des recettes et des courses liees.`
-        : `Supprimer ${label} ? Les repas planifies relies seront aussi supprimes.`,
+    message: messages[entityType] || `Supprimer ${label} ?`,
   };
 }
 
@@ -4019,6 +4410,111 @@ function deleteRecipe(recipeId) {
   );
 }
 
+function applyVacationEdit(vacationId, payload) {
+  const vacation = state.vacations.find((entry) => entry.id === vacationId);
+  if (!vacation) {
+    return;
+  }
+
+  const nextDestination = clean(payload.destination);
+  const nextStartDate = clean(payload.startDate);
+  const nextEndDate = clean(payload.endDate);
+  if (!nextDestination || !nextStartDate || !nextEndDate) {
+    return;
+  }
+
+  state.vacations = state.vacations.map((entry) =>
+    entry.id === vacationId
+      ? {
+          ...entry,
+          destination: nextDestination,
+          startDate: nextStartDate,
+          endDate: nextEndDate,
+          budget: Number(payload.budget) || 0,
+        }
+      : entry
+  );
+
+  state.calendar = state.calendar.map((eventItem) => {
+    if (eventItem.sourceType !== "vacation" || eventItem.sourceId !== vacationId) {
+      return eventItem;
+    }
+
+    if (eventItem.title.startsWith("Depart -")) {
+      return {
+        ...eventItem,
+        title: `Depart - ${nextDestination}`,
+        date: nextStartDate,
+      };
+    }
+
+    if (eventItem.title.startsWith("Retour -")) {
+      return {
+        ...eventItem,
+        title: `Retour - ${nextDestination}`,
+        date: nextEndDate,
+      };
+    }
+
+    return eventItem;
+  });
+}
+
+function deleteVacation(vacationId) {
+  state.vacations = state.vacations.filter((entry) => entry.id !== vacationId);
+  state.calendar = state.calendar.filter(
+    (eventItem) => !(eventItem.sourceType === "vacation" && eventItem.sourceId === vacationId)
+  );
+  state.tasks = state.tasks.filter(
+    (task) => !(task.sourceType === "vacation" && task.sourceId === vacationId)
+  );
+  state.projects = state.projects.map((project) =>
+    project.linkedVacationId === vacationId ? { ...project, linkedVacationId: null } : project
+  );
+}
+
+function applyProjectEdit(projectId, payload) {
+  const project = state.projects.find((entry) => entry.id === projectId);
+  if (!project) {
+    return;
+  }
+
+  const nextTitle = clean(payload.title);
+  const nextDeadline = clean(payload.deadline);
+  if (!nextTitle || !nextDeadline) {
+    return;
+  }
+
+  state.projects = state.projects.map((entry) =>
+    entry.id === projectId
+      ? {
+          ...entry,
+          title: nextTitle,
+          lead: clean(payload.lead) || entry.lead,
+          status: clean(payload.status) || entry.status,
+          deadline: nextDeadline,
+          note: clean(payload.note) || "",
+        }
+      : entry
+  );
+}
+
+function deleteProject(projectId) {
+  state.projects = state.projects.filter((entry) => entry.id !== projectId);
+  state.tasks = state.tasks.filter(
+    (task) => !(task.sourceType === "project" && task.sourceId === projectId)
+  );
+  state.calendar = state.calendar.filter(
+    (eventItem) => !(eventItem.sourceType === "project" && eventItem.sourceId === projectId)
+  );
+  state.shopping = state.shopping.filter(
+    (item) => !(item.sourceType === "project" && item.sourceId === projectId)
+  );
+  state.vacations = state.vacations.map((vacation) =>
+    vacation.linkedProjectId === projectId ? { ...vacation, linkedProjectId: null } : vacation
+  );
+}
+
 function renderCurrentDate() {
   currentDate.textContent = new Intl.DateTimeFormat("fr-FR", {
     weekday: "long",
@@ -4054,6 +4550,19 @@ function formatShortDate(dateString) {
   return new Intl.DateTimeFormat("fr-FR", {
     day: "numeric",
     month: "short",
+  }).format(date);
+}
+
+function formatLongDate(dateString) {
+  const date = new Date(`${dateString}T12:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return "jour a definir";
+  }
+
+  return new Intl.DateTimeFormat("fr-FR", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
   }).format(date);
 }
 
@@ -4351,6 +4860,13 @@ function clone(value) {
 function normalizeState(inputState) {
   const nextState = clone(inputState);
   nextState.lastSavedAt = clean(nextState.lastSavedAt) || null;
+  nextState.tasks = reconcileTaskCollection(
+    (nextState.tasks || []).map((task) => ({
+      ...task,
+      isLate: Boolean(task.isLate),
+      lateOriginDate: clean(task.lateOriginDate) || null,
+    }))
+  ).tasks;
 
   nextState.ingredients = (nextState.ingredients || []).map((ingredient) => ({
     ...ingredient,
