@@ -3666,19 +3666,6 @@ function buildUnifiedTimeline() {
     });
   });
 
-  state.vacations.forEach((vacation) => {
-    timeline.push({
-      id: `timeline-${vacation.id}`,
-      title: `Depart ${vacation.destination}`,
-      date: vacation.startDate,
-      label: "Vacances",
-      profiles: vacation.profiles,
-      bucket: "Voyage",
-      meta: formatCurrency(vacation.budget),
-      targetView: "vacations",
-    });
-  });
-
   return timeline
     .filter((item) => item.profiles.includes(state.activeProfile))
     .sort(sortByDate("date"));
