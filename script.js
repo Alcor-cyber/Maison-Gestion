@@ -1,10 +1,22 @@
 const STORAGE_KEY = "house-connected-home-v1";
+const STORAGE_SYNC_KEY = "house-connected-home-sync-v1";
 const ADMIN_PASSWORD_KEY = "house-admin-password-v1";
 const ADMIN_ACCESS_KEY = "house-admin-access-v1";
 const PROFILE_SESSION_KEY = "house-active-profile-session-v1";
 const STATE_API_URL = "/api/state";
 const SESSION_API_URL = "/api/session";
 const DEFAULT_ADMIN_PASSWORD = "dracaufeu";
+const SHARED_STATE_KEYS = [
+  "lastSavedAt",
+  "tasks",
+  "shopping",
+  "ingredients",
+  "recipes",
+  "meals",
+  "calendar",
+  "vacations",
+  "projects",
+];
 
 const PROFILE_MAP = {
   thomas: {
@@ -269,6 +281,8 @@ const stateSync = {
   authRequired: false,
   authEnabled: false,
   isAuthenticated: false,
+  lastRemoteSyncAt: "",
+  lastSharedFingerprint: "",
 };
 
 let state = normalizeState(clone(DEFAULT_STATE));
@@ -278,6 +292,7 @@ let ui = {
   ingredientLibrarySearchTerm: "",
   mealRecipeSearchTerm: "",
 };
+stateSync.lastSharedFingerprint = buildSharedStateFingerprint(getSharedStateSnapshot(state));
 
 init();
 
@@ -1206,8 +1221,7 @@ function render() {
   }
 
   if (didUpdateTasks) {
-    persistLocalState(state);
-    queueRemoteStateSave(true);
+    saveState();
   }
 
   if (isCalendarPage) {
@@ -4880,18 +4894,57 @@ function loadState() {
 }
 
 function saveState() {
-  state.lastSavedAt = new Date().toISOString();
+  const nextSharedFingerprint = buildSharedStateFingerprint(getSharedStateSnapshot(state));
+  const sharedChanged = nextSharedFingerprint !== stateSync.lastSharedFingerprint;
+
+  if (sharedChanged) {
+    state.lastSavedAt = new Date().toISOString();
+  }
+
   persistLocalState(state);
-  queueRemoteStateSave(true);
+
+  if (sharedChanged) {
+    stateSync.lastSharedFingerprint = buildSharedStateFingerprint(getSharedStateSnapshot(state));
+    queueRemoteStateSave(true);
+  }
 }
 
 function persistLocalState(snapshot) {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
 }
 
+function loadSyncMeta() {
+  try {
+    const stored = window.localStorage.getItem(STORAGE_SYNC_KEY);
+    if (!stored) {
+      return { lastRemoteSyncAt: "" };
+    }
+
+    const parsed = JSON.parse(stored);
+    return {
+      lastRemoteSyncAt: clean(parsed.lastRemoteSyncAt),
+    };
+  } catch (error) {
+    return { lastRemoteSyncAt: "" };
+  }
+}
+
+function persistSyncMeta() {
+  window.localStorage.setItem(
+    STORAGE_SYNC_KEY,
+    JSON.stringify({
+      lastRemoteSyncAt: stateSync.lastRemoteSyncAt || "",
+    })
+  );
+}
+
 async function hydrateState() {
   const localRecord = loadStateRecord();
   state = localRecord.state;
+  const localUiState = clone(localRecord.state);
+  const syncMeta = loadSyncMeta();
+  stateSync.lastRemoteSyncAt = clean(syncMeta.lastRemoteSyncAt);
+  stateSync.lastSharedFingerprint = buildSharedStateFingerprint(getSharedStateSnapshot(state));
   render();
 
   try {
@@ -4909,14 +4962,19 @@ async function hydrateState() {
       remoteRecord && (remoteRecord.updatedAt || getStateTimestamp(remoteRecord.state))
     );
     const localTimestamp = getStateTimestamp(state);
+    const localHasUnsyncedSharedChanges = Boolean(
+      localTimestamp && (!stateSync.lastRemoteSyncAt || localTimestamp > stateSync.lastRemoteSyncAt)
+    );
 
     if (remoteState) {
-      if (localTimestamp && (!remoteTimestamp || localTimestamp > remoteTimestamp)) {
+      if (localHasUnsyncedSharedChanges && localTimestamp && (!remoteTimestamp || localTimestamp > remoteTimestamp)) {
         persistLocalState(state);
         queueRemoteStateSave(true);
       } else {
-        state = remoteState;
+        state = mergeSharedStateIntoState(localUiState, remoteState);
         persistLocalState(state);
+        stateSync.lastRemoteSyncAt = remoteTimestamp || getStateTimestamp(state);
+        persistSyncMeta();
       }
     } else if (localRecord.hasStoredValue) {
       if (!state.lastSavedAt) {
@@ -4929,6 +4987,7 @@ async function hydrateState() {
     console.error("Remote state hydration failed:", error);
   }
 
+  stateSync.lastSharedFingerprint = buildSharedStateFingerprint(getSharedStateSnapshot(state));
   render();
 }
 
@@ -5023,7 +5082,7 @@ async function flushRemoteStateSave() {
   stateSync.hasPendingSave = false;
 
   try {
-    const snapshot = clone(state);
+    const snapshot = getSharedStateSnapshot(state);
     const response = await postRemoteStateSnapshot(snapshot, { keepalive: true });
 
     if (response.status === 401) {
@@ -5034,6 +5093,11 @@ async function flushRemoteStateSave() {
 
     if (!response.ok && response.status !== 404) {
       throw new Error(`Unable to save remote state (${response.status})`);
+    }
+
+    if (response.ok) {
+      stateSync.lastRemoteSyncAt = getStateTimestamp(state);
+      persistSyncMeta();
     }
   } catch (error) {
     console.error("Remote state save failed:", error);
@@ -5065,7 +5129,15 @@ function persistRemoteStateOnHide() {
     return;
   }
 
-  const snapshot = clone(state);
+  if (
+    stateSync.lastRemoteSyncAt &&
+    getStateTimestamp(state) &&
+    getStateTimestamp(state) <= stateSync.lastRemoteSyncAt
+  ) {
+    return;
+  }
+
+  const snapshot = getSharedStateSnapshot(state);
   const payload = JSON.stringify({
     state: snapshot,
     updatedAt: getStateTimestamp(snapshot) || new Date().toISOString(),
@@ -5133,6 +5205,43 @@ async function unlockHouseSession(password) {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function getSharedStateSnapshot(targetState) {
+  return SHARED_STATE_KEYS.reduce((snapshot, key) => {
+    snapshot[key] =
+      targetState && typeof targetState[key] !== "undefined"
+        ? clone(targetState[key])
+        : clone(DEFAULT_STATE[key]);
+    return snapshot;
+  }, {});
+}
+
+function buildSharedStateFingerprint(targetState) {
+  const snapshot = targetState && !Array.isArray(targetState) && targetState.tasks
+    ? getSharedStateSnapshot(targetState)
+    : targetState;
+  return JSON.stringify(snapshot || {});
+}
+
+function mergeSharedStateIntoState(baseState, sharedState) {
+  const uiState = {
+    currentView: baseState.currentView || DEFAULT_STATE.currentView,
+    activeProfile: baseState.activeProfile || DEFAULT_STATE.activeProfile,
+    calendarDisplay: baseState.calendarDisplay || DEFAULT_STATE.calendarDisplay,
+    calendarMode: baseState.calendarMode || DEFAULT_STATE.calendarMode,
+    calendarYear: Number.isFinite(baseState.calendarYear) ? baseState.calendarYear : DEFAULT_STATE.calendarYear,
+    calendarMonth: Number.isFinite(baseState.calendarMonth) ? baseState.calendarMonth : DEFAULT_STATE.calendarMonth,
+    showIngredientComposer: Boolean(baseState.showIngredientComposer),
+    recipeDraftIngredients: clone(baseState.recipeDraftIngredients || []),
+  };
+
+  return normalizeState({
+    ...clone(DEFAULT_STATE),
+    ...getSharedStateSnapshot(baseState),
+    ...getSharedStateSnapshot(sharedState),
+    ...uiState,
+  });
 }
 
 function readFileAsDataUrl(file) {
