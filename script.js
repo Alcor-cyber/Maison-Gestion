@@ -593,6 +593,13 @@ function handleActionClick(event) {
     return;
   }
 
+  if (action === "delete-calendar-event" && id) {
+    deleteCalendarEvent(id);
+    saveState();
+    render();
+    return;
+  }
+
   if (
     action === "open-admin-page" ||
     action === "open-admin-ingredients-page" ||
@@ -3263,6 +3270,9 @@ function renderCalendarEventRow(eventItem) {
         <div class="inline-stats">
           <span class="tag">Agenda</span>
           ${renderEventJumpButton(timelineItem)}
+          <button class="ghost-button" type="button" data-action="delete-calendar-event" data-id="${eventItem.id}">
+            Supprimer
+          </button>
         </div>
       </div>
       <div class="row-bottom">
@@ -5446,6 +5456,10 @@ function deleteShoppingItem(itemId) {
   }
 
   state.shopping = state.shopping.filter((entry) => entry.id !== itemId);
+}
+
+function deleteCalendarEvent(eventId) {
+  state.calendar = state.calendar.filter((eventItem) => eventItem.id !== eventId);
 }
 
 function updateShoppingQuantity(itemId, nextQuantityRaw) {
