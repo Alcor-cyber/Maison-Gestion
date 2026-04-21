@@ -274,6 +274,9 @@ const stateSync = {
 let state = normalizeState(clone(DEFAULT_STATE));
 let ui = {
   modal: null,
+  stockSearchTerm: "",
+  ingredientLibrarySearchTerm: "",
+  mealRecipeSearchTerm: "",
 };
 
 init();
@@ -300,7 +303,36 @@ function bindGlobalEvents() {
   });
 
   document.addEventListener("click", handleActionClick);
+  document.addEventListener("input", handleInputChange);
   document.addEventListener("submit", handleFormSubmit);
+  document.addEventListener("visibilitychange", handleVisibilityPersistence);
+  window.addEventListener("pagehide", handleVisibilityPersistence);
+  window.addEventListener("beforeunload", handleVisibilityPersistence);
+}
+
+function handleInputChange(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement)) {
+    return;
+  }
+
+  if (target.id === "mealRecipeSearch") {
+    ui.mealRecipeSearchTerm = clean(target.value);
+  }
+}
+
+function handleVisibilityPersistence(event) {
+  if (
+    event?.type === "visibilitychange" &&
+    typeof document !== "undefined" &&
+    document.visibilityState &&
+    document.visibilityState !== "hidden"
+  ) {
+    return;
+  }
+
+  persistLocalState(state);
+  persistRemoteStateOnHide();
 }
 
 function ensureMobilePageNav() {
@@ -528,6 +560,17 @@ function handleActionClick(event) {
     return;
   }
 
+  if (action === "delete-meal" && id) {
+    openDeleteModal("meal", id);
+    render();
+    return;
+  }
+
+  if (action === "open-recipe-pdf" && id) {
+    openRecipePdf(id);
+    return;
+  }
+
   if (action === "delete-shopping" && id) {
     deleteShoppingItem(id);
     saveState();
@@ -737,6 +780,10 @@ function handleActionClick(event) {
       deleteRecipe(ui.modal.id);
     }
 
+    if (ui.modal.entityType === "meal") {
+      deleteMeal(ui.modal.id);
+    }
+
     if (ui.modal.entityType === "vacation") {
       deleteVacation(ui.modal.id);
     }
@@ -857,8 +904,20 @@ async function handleFormSubmit(event) {
     updateShoppingQuantity(shoppingId, clean(data.get("quantity")) || "1");
   }
 
+  if (formId === "ingredientLibrarySearchForm") {
+    ui.ingredientLibrarySearchTerm = clean(data.get("search"));
+    render();
+    return;
+  }
+
+  if (formId === "stockSearchForm") {
+    ui.stockSearchTerm = clean(data.get("search"));
+    render();
+    return;
+  }
+
   if (formId === "mealForm") {
-    const recipe = state.recipes.find((entry) => entry.id === clean(data.get("recipeId")));
+    const recipe = findRecipeByQuery(clean(data.get("recipeQuery")));
     if (!recipe) {
       window.alert("Choisissez une recette existante.");
       return;
@@ -876,6 +935,7 @@ async function handleFormSubmit(event) {
     };
     state.meals.unshift(meal);
     addMealIngredientsToShopping(meal.id);
+    ui.mealRecipeSearchTerm = "";
   }
 
   if (formId === "cookedForm") {
@@ -1033,10 +1093,17 @@ async function handleFormSubmit(event) {
       return;
     }
 
+    const pdfFile = data.get("pdfFile");
+    const removePdf = data.get("removePdf") === "on";
+    const nextPdfDataUrl =
+      pdfFile instanceof File && pdfFile.size > 0 ? await readFileAsDataUrl(pdfFile) : undefined;
+
     applyRecipeEdit(recipeId, {
       name: clean(data.get("name")),
       dishType: clean(data.get("dishType")) || "Plat",
       ingredientEntries: entries,
+      pdfDataUrl: removePdf ? null : nextPdfDataUrl,
+      pdfName: removePdf ? null : nextPdfDataUrl && pdfFile instanceof File ? pdfFile.name : undefined,
     });
     ui.modal = null;
     saveState();
@@ -1834,17 +1901,24 @@ function renderMealPlannerForm(recipes) {
     <form id="mealForm">
       <div class="form-grid">
         <div class="field full">
-          <label for="meal-recipe">Plat</label>
-          <select id="meal-recipe" name="recipeId" required>
-            <option value="">Choisir une recette</option>
+          <label for="mealRecipeSearch">Recette</label>
+          <input
+            id="mealRecipeSearch"
+            name="recipeQuery"
+            list="recipeSuggestions"
+            value="${escapeHtmlAttribute(ui.mealRecipeSearchTerm)}"
+            placeholder="Ecrire pour rechercher la recette"
+            required
+          />
+          <datalist id="recipeSuggestions">
             ${recipes
               .map(
                 (recipe) => `
-                  <option value="${recipe.id}">${escapeHtml(recipe.name)} · ${escapeHtml(recipe.dishType)}</option>
+                  <option value="${escapeHtml(recipe.name)}">${escapeHtml(recipe.dishType)}</option>
                 `
               )
               .join("")}
-          </select>
+          </datalist>
         </div>
         <div class="field">
           <label for="meal-date">Date</label>
@@ -1917,6 +1991,7 @@ function renderCookedUsageForm(recipes) {
 }
 
 function renderIngredientPage() {
+  const filteredIngredients = getFilteredIngredients(ui.ingredientLibrarySearchTerm);
   return `
     <div class="content-split">
       <section class="composer reveal">
@@ -1966,16 +2041,22 @@ function renderIngredientPage() {
         <div class="section-head">
           <div>
             <h3 class="section-title">Base ingredients</h3>
-            <p class="section-copy">${state.ingredients.length} ingredient${state.ingredients.length > 1 ? "s" : ""} disponibles dans votre base locale.</p>
+            <p class="section-copy">${filteredIngredients.length} ingredient${filteredIngredients.length > 1 ? "s" : ""} visibles dans votre base.</p>
           </div>
         </div>
+        <form id="ingredientLibrarySearchForm">
+          <div class="form-grid">
+            <div class="field full">
+              <label for="ingredientLibrarySearchInput">Rechercher un ingredient</label>
+              <input id="ingredientLibrarySearchInput" name="search" value="${escapeHtmlAttribute(ui.ingredientLibrarySearchTerm)}" placeholder="Ex. tomate, feta, basilic" />
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="ghost-button" type="submit">Rechercher</button>
+          </div>
+        </form>
         <div class="entity-grid">
-          ${state.ingredients
-            .slice()
-            .sort((left, right) => left.name.localeCompare(right.name, "fr"))
-            .slice(0, 12)
-            .map(renderIngredientSummaryEntity)
-            .join("")}
+          ${filteredIngredients.length ? filteredIngredients.map(renderIngredientSummaryEntity).join("") : renderEmpty("Aucun ingredient ne correspond a votre recherche.")}
         </div>
       </section>
     </div>
@@ -1983,7 +2064,7 @@ function renderIngredientPage() {
 }
 
 function renderStockPage() {
-  const groups = buildIngredientTypeGroups();
+  const groups = buildIngredientTypeGroups(ui.stockSearchTerm);
   const trackedIngredients = state.ingredients.filter((ingredient) => normalizeQuantityString(ingredient.stockQuantity || "0") !== "0").length;
 
   return `
@@ -1994,8 +2075,19 @@ function renderStockPage() {
           <p class="section-copy">${trackedIngredients} ingredient${trackedIngredients > 1 ? "s" : ""} ont deja un stock non nul. Cocher une course augmente le stock, preparer un repas le diminue.</p>
         </div>
       </div>
+      <form id="stockSearchForm">
+        <div class="form-grid">
+          <div class="field full">
+            <label for="stockSearchInput">Rechercher un ingredient</label>
+            <input id="stockSearchInput" name="search" value="${escapeHtmlAttribute(ui.stockSearchTerm)}" placeholder="Ex. tomate, riz, lait" />
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="ghost-button" type="submit">Rechercher</button>
+        </div>
+      </form>
       <div class="shopping-week-list">
-        ${groups.length ? groups.map(renderStockGroup).join("") : renderEmpty("Aucun ingredient en base pour le moment.")}
+        ${groups.length ? groups.map(renderStockGroup).join("") : renderEmpty("Aucun ingredient ne correspond a votre recherche.")}
       </div>
     </section>
   `;
@@ -2406,6 +2498,27 @@ function buildModalContent() {
                   <option ${ui.modal.dishType === "Boisson" ? "selected" : ""}>Boisson</option>
                 </select>
               </div>
+              <div class="field full">
+                <label for="edit-recipe-pdf">PDF de la recette</label>
+                <input id="edit-recipe-pdf" name="pdfFile" type="file" accept="application/pdf" />
+                ${
+                  recipe.pdfDataUrl
+                    ? `<span class="muted">PDF actuel : ${escapeHtml(recipe.pdfName || "document.pdf")}</span>`
+                    : '<span class="muted">Aucun PDF associe pour le moment.</span>'
+                }
+              </div>
+              ${
+                recipe.pdfDataUrl
+                  ? `
+                    <div class="field full">
+                      <label>
+                        <input name="removePdf" type="checkbox" />
+                        Retirer le PDF actuel
+                      </label>
+                    </div>
+                  `
+                  : ""
+              }
             </div>
             <div class="modal-entry-list">
               ${ui.modal.entries
@@ -2791,6 +2904,7 @@ function renderMealEntity(meal, compact) {
   const recipe = getRecipeByMeal(meal);
   const unlistedItems = ingredients.filter((ingredient) => !hasShoppingItemForIngredient(meal.id, ingredient));
   const pendingItems = ingredients.filter((ingredient) => !isIngredientValidated(meal.id, ingredient));
+  const hasRecipePdf = Boolean(recipe && recipe.pdfDataUrl);
   return `
     <article class="entity reveal meal-entity">
       <div class="entity-top">
@@ -2803,9 +2917,16 @@ function renderMealEntity(meal, compact) {
             ? `<span class="tag">${pendingItems.length ? `Attention ${pendingItems.length}` : "Cuisine"}</span>`
             : `
               <div class="inline-stats">
-                <button class="ghost-button" type="button" data-action="add-meal-shopping" data-id="${meal.id}">Ajouter les ingredients manquants</button>
+                ${
+                  hasRecipePdf
+                    ? `<button class="icon-button" type="button" data-action="open-recipe-pdf" data-id="${meal.id}" title="Ouvrir le PDF de la recette" aria-label="Ouvrir le PDF de la recette">🍲</button>`
+                    : ""
+                }
                 <button class="toggle-button ${meal.prepared ? "is-active" : ""}" type="button" data-action="toggle-meal-prepared" data-id="${meal.id}">
                   ${meal.prepared ? "Prepar&eacute;" : "Marquer pr&eacute;par&eacute;"}
+                </button>
+                <button class="ghost-button" type="button" data-action="delete-meal" data-id="${meal.id}">
+                  Supprimer
                 </button>
               </div>
             `
@@ -3005,7 +3126,7 @@ function renderAdminRecipeRow(recipe) {
       <div class="entity-top">
         <div>
           <h4 class="entity-title">${escapeHtml(recipe.name)}</h4>
-          <p class="entity-copy">${escapeHtml(recipe.dishType)} · ${(recipe.ingredientEntries || []).length} ingredient${(recipe.ingredientEntries || []).length > 1 ? "s" : ""} · ${plannedMeals} repas planifie${plannedMeals > 1 ? "s" : ""}</p>
+          <p class="entity-copy">${escapeHtml(recipe.dishType)} · ${(recipe.ingredientEntries || []).length} ingredient${(recipe.ingredientEntries || []).length > 1 ? "s" : ""} · ${plannedMeals} repas planifie${plannedMeals > 1 ? "s" : ""}${recipe.pdfDataUrl ? " · PDF joint" : ""}</p>
         </div>
         <div class="inline-stats">
           <button class="ghost-button" type="button" data-action="edit-recipe" data-id="${recipe.id}">
@@ -3572,6 +3693,26 @@ function getRecipeIngredientNames(recipe) {
     .map((ingredient) => ingredient.name);
 }
 
+function getFilteredIngredients(searchTerm = "") {
+  const query = clean(searchTerm).toLowerCase();
+  return state.ingredients
+    .slice()
+    .sort((left, right) => left.name.localeCompare(right.name, "fr"))
+    .filter((ingredient) => {
+      if (!query) {
+        return true;
+      }
+
+      return [
+        ingredient.name,
+        ingredient.foodType,
+        formatIngredientStorage(ingredient.storage),
+      ]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query));
+    });
+}
+
 function getMealIngredients(meal) {
   const recipe = getRecipeByMeal(meal);
   if (recipe) {
@@ -3585,6 +3726,25 @@ function findIngredientByName(name) {
   return state.ingredients.find(
     (ingredient) => ingredient.name.toLowerCase() === clean(name).toLowerCase()
   );
+}
+
+function findRecipeByQuery(query) {
+  const cleanQuery = clean(query).toLowerCase();
+  if (!cleanQuery) {
+    return null;
+  }
+
+  const exactMatch = state.recipes.find((recipe) => recipe.name.toLowerCase() === cleanQuery);
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  const partialMatches = state.recipes.filter((recipe) => recipe.name.toLowerCase().includes(cleanQuery));
+  if (partialMatches.length === 1) {
+    return partialMatches[0];
+  }
+
+  return null;
 }
 
 function findIngredientById(ingredientId) {
@@ -3928,10 +4088,10 @@ function downloadShoppingWeekPdf(weekKey) {
   doc.save(filename);
 }
 
-function buildIngredientTypeGroups() {
+function buildIngredientTypeGroups(searchTerm = "") {
   const groups = new Map();
 
-  state.ingredients.forEach((ingredient) => {
+  getFilteredIngredients(searchTerm).forEach((ingredient) => {
     const foodType = formatFoodType(ingredient.foodType);
     if (!groups.has(foodType)) {
       groups.set(foodType, []);
@@ -4217,6 +4377,8 @@ function openRecipeEditModal(recipeId) {
     name: recipe.name,
     dishType: recipe.dishType,
     entries: clone(getRecipeIngredientEntries(recipe)),
+    pdfDataUrl: recipe.pdfDataUrl || null,
+    pdfName: recipe.pdfName || null,
   };
 }
 
@@ -4248,6 +4410,7 @@ function openDeleteModal(entityType, id) {
   const sources = {
     ingredient: state.ingredients.find((entry) => entry.id === id)?.name,
     recipe: state.recipes.find((entry) => entry.id === id)?.name,
+    meal: state.meals.find((entry) => entry.id === id)?.title,
     vacation: state.vacations.find((entry) => entry.id === id)?.destination,
     project: state.projects.find((entry) => entry.id === id)?.title,
   };
@@ -4255,6 +4418,7 @@ function openDeleteModal(entityType, id) {
   const messages = {
     ingredient: `Supprimer ${label} ? Il sera retire des recettes et des courses liees.`,
     recipe: `Supprimer ${label} ? Les repas planifies relies seront aussi supprimes.`,
+    meal: `Supprimer ${label} ? Les elements de courses lies a ce repas seront nettoyes.`,
     vacation: `Supprimer ${label} ? Les evenements calendrier et les taches relies seront aussi retires.`,
     project: `Supprimer ${label} ? Les taches, achats et liens vacances relies seront nettoyes.`,
   };
@@ -4265,6 +4429,17 @@ function openDeleteModal(entityType, id) {
     id,
     message: messages[entityType] || `Supprimer ${label} ?`,
   };
+}
+
+function openRecipePdf(mealId) {
+  const meal = state.meals.find((entry) => entry.id === mealId);
+  const recipe = meal ? getRecipeByMeal(meal) : null;
+  if (!recipe || !recipe.pdfDataUrl) {
+    window.alert("Aucun PDF n'est associe a cette recette.");
+    return;
+  }
+
+  window.open(recipe.pdfDataUrl, "_blank", "noopener,noreferrer");
 }
 
 function syncRecipeModalDraft() {
@@ -4367,7 +4542,18 @@ function applyRecipeEdit(recipeId, payload) {
 
   state.recipes = state.recipes.map((entry) =>
     entry.id === recipeId
-      ? { ...entry, name: nextName, dishType: nextType, ingredientEntries: nextIngredientEntries }
+      ? {
+          ...entry,
+          name: nextName,
+          dishType: nextType,
+          ingredientEntries: nextIngredientEntries,
+          pdfDataUrl:
+            payload.pdfDataUrl === undefined ? entry.pdfDataUrl || null : payload.pdfDataUrl,
+          pdfName:
+            payload.pdfName === undefined
+              ? entry.pdfName || null
+              : payload.pdfName,
+        }
       : entry
   );
   state.meals = state.meals.map((meal) =>
@@ -4400,13 +4586,67 @@ function deleteRecipe(recipeId) {
     .filter((meal) => meal.recipeId === recipeId)
     .map((meal) => meal.id);
 
+  removedMealIds.forEach((mealId) => {
+    deleteMeal(mealId, { recipe });
+  });
   state.recipes = state.recipes.filter((entry) => entry.id !== recipeId);
   state.meals = state.meals.filter((meal) => meal.recipeId !== recipeId);
+}
+
+function deleteMeal(mealId, options = {}) {
+  const meal = state.meals.find((entry) => entry.id === mealId);
+  if (!meal) {
+    return;
+  }
+
+  const recipe = options.recipe || getRecipeByMeal(meal);
+
+  state.shopping = state.shopping.flatMap((item) => {
+    if (item.sourceType !== "meal" || !(item.linkedMealIds || [item.sourceId]).includes(mealId)) {
+      return [item];
+    }
+
+    const linkedMealIds = (item.linkedMealIds || [item.sourceId]).filter((linkedId) => linkedId !== mealId);
+
+    if (!linkedMealIds.length) {
+      if (item.purchased) {
+        return [
+          {
+            ...item,
+            sourceType: "house",
+            sourceId: null,
+            linkedMealIds: [],
+          },
+        ];
+      }
+
+      return [];
+    }
+
+    if (recipe && item.ingredientId) {
+      const recipeEntry = getRecipeIngredientEntries(recipe).find((entry) => entry.ingredientId === item.ingredientId);
+      if (recipeEntry) {
+        return [
+          {
+            ...item,
+            quantity: subtractQuantities(item.quantity || "0", recipeEntry.quantity || "0"),
+            linkedMealIds,
+          },
+        ];
+      }
+    }
+
+    return [
+      {
+        ...item,
+        linkedMealIds,
+      },
+    ];
+  }).filter((item) => normalizeQuantityString(item.quantity || "0") !== "0" || item.purchased);
+
+  state.meals = state.meals.filter((entry) => entry.id !== mealId);
   state.calendar = state.calendar.filter(
-    (eventItem) => !(eventItem.sourceType === "meal" && removedMealIds.includes(eventItem.sourceId))
-  );
-  state.shopping = state.shopping.filter(
-    (item) => !(item.sourceType === "meal" && removedMealIds.includes(item.sourceId))
+    (eventItem) => !(eventItem.sourceType === "meal" && eventItem.sourceId === mealId)
   );
 }
 
@@ -4642,7 +4882,7 @@ function loadState() {
 function saveState() {
   state.lastSavedAt = new Date().toISOString();
   persistLocalState(state);
-  queueRemoteStateSave();
+  queueRemoteStateSave(true);
 }
 
 function persistLocalState(snapshot) {
@@ -4784,16 +5024,7 @@ async function flushRemoteStateSave() {
 
   try {
     const snapshot = clone(state);
-    const response = await fetch(STATE_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        state: snapshot,
-        updatedAt: getStateTimestamp(snapshot) || new Date().toISOString(),
-      }),
-    });
+    const response = await postRemoteStateSnapshot(snapshot, { keepalive: true });
 
     if (response.status === 401) {
       handleRemoteUnauthorized();
@@ -4813,6 +5044,53 @@ async function flushRemoteStateSave() {
       void flushRemoteStateSave();
     }
   }
+}
+
+async function postRemoteStateSnapshot(snapshot, options = {}) {
+  return fetch(STATE_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    keepalive: Boolean(options.keepalive),
+    body: JSON.stringify({
+      state: snapshot,
+      updatedAt: getStateTimestamp(snapshot) || new Date().toISOString(),
+    }),
+  });
+}
+
+function persistRemoteStateOnHide() {
+  if (stateSync.authRequired || typeof window.fetch !== "function") {
+    return;
+  }
+
+  const snapshot = clone(state);
+  const payload = JSON.stringify({
+    state: snapshot,
+    updatedAt: getStateTimestamp(snapshot) || new Date().toISOString(),
+  });
+
+  if (navigator.sendBeacon) {
+    try {
+      const blob = new Blob([payload], { type: "application/json" });
+      const queued = navigator.sendBeacon(STATE_API_URL, blob);
+      if (queued) {
+        return;
+      }
+    } catch (error) {
+      console.error("Beacon save failed:", error);
+    }
+  }
+
+  void fetch(STATE_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    keepalive: true,
+    body: payload,
+  });
 }
 
 function getStateTimestamp(targetState) {
@@ -4857,6 +5135,15 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Impossible de lire le fichier."));
+    reader.readAsDataURL(file);
+  });
+}
+
 function normalizeState(inputState) {
   const nextState = clone(inputState);
   nextState.lastSavedAt = clean(nextState.lastSavedAt) || null;
@@ -4878,6 +5165,8 @@ function normalizeState(inputState) {
   nextState.recipes = (nextState.recipes || []).map((recipe) => ({
     ...recipe,
     ingredientEntries: getNormalizedRecipeEntries(recipe),
+    pdfDataUrl: clean(recipe.pdfDataUrl) || null,
+    pdfName: clean(recipe.pdfName) || null,
   }));
 
   nextState.recipeDraftIngredients = (nextState.recipeDraftIngredients || []).map((entry) =>

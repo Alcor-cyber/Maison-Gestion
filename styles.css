@@ -553,6 +553,7 @@ button {
 
 .action-button,
 .ghost-button,
+.icon-button,
 .calendar-accent-button,
 .toggle-button {
   display: inline-flex;
@@ -576,10 +577,17 @@ button {
 }
 
 .ghost-button,
+.icon-button,
 .toggle-button {
   background: rgba(255, 255, 255, 0.62);
   color: var(--text);
   border: 1px solid rgba(32, 49, 40, 0.08);
+}
+
+.icon-button {
+  min-width: 2.6rem;
+  padding: 0.72rem;
+  font-size: 1rem;
 }
 
 .toggle-button.is-active {
@@ -590,6 +598,7 @@ button {
 
 .action-button:hover,
 .ghost-button:hover,
+.icon-button:hover,
 .calendar-accent-button:hover,
 .toggle-button:hover,
 .profile-button:hover {
