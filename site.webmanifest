@@ -1,0 +1,17 @@
+{
+  "name": "Maison",
+  "short_name": "Maison",
+  "lang": "fr",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#eaf4ec",
+  "theme_color": "#4fa166",
+  "icons": [
+    {
+      "src": "./apple-touch-icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
